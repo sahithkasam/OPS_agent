@@ -4,14 +4,21 @@ scikit-learn
 chromadb
 langchain
 langchain-community
+langchain-groq
 streamlit
 plotly
 watchdog
 flask
+fastapi
+uvicorn[standard]
 pyngrok
 requests
-# For potential OpenAI usage if configured, but we will make it optional in code
+httpx
+groq
+langgraph
+psutil
 openai
 tiktoken
 jira
 python-dotenv
+pytest

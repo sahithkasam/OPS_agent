@@ -1,93 +1,197 @@
+"""
+RCA Agent — OpsPilot (Updated with Groq/Llama 3.1)
+Now uses the full OpsPilot multi-agent pipeline internally.
+Kept for backward compatibility with engine.py.
+"""
+
+import os
 import json
 from src.rag.vector_db import KnowledgeBase
 
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
+
 class RCAAgent:
+    """
+    RCA Agent — Root Cause Analysis using Groq/Llama 3.1 + Agentic RAG.
+    Backward-compatible interface for engine.py, now powered by the
+    full multi-agent OpsPilot Pipeline internally.
+    """
+
     def __init__(self):
         self.kb = KnowledgeBase()
         self.kb.populate('./data/historical_incidents.json')
-        # Placeholder for real LLM client (OpenAI/Ollama)
-        # For this demo, we can simulate the LLM response if no key is provided, 
-        # but the structure will be ready for real integration.
-        self.mock_mode = True 
 
-    def analyze_incident(self, metrics_snapshot, recent_logs):
-        """
-        Main entry point for the agent.
-        1. Construct context from metrics + logs.
-        2. Query Vector DB for similar past incidents.
-        3. (Mock) Generate LLM response based on inputs.
-        """
-        # 1. Summarize current situation
-        symptoms = []
-        if metrics_snapshot['cpu_percent'] > 80: symptoms.append("High CPU")
-        if metrics_snapshot['memory_percent'] > 90: symptoms.append("High Memory")
-        if metrics_snapshot['latency_seconds'] > 2.0: symptoms.append("High Latency")
-        
-        error_logs = [l for l in recent_logs if l['level'] in ['ERROR', 'CRITICAL']]
-        if error_logs:
-            symptoms.append(f"{len(error_logs)} Error Logs Found")
-            # Extract unique error messages logic simplified
-            uniq_errs = list(set([l['message'] for l in error_logs]))
-            symptoms.extend(uniq_errs[:2]) # Top 2 errors
+        # Groq LLM Setup (Llama 3.1 — as specified in proposal)
+        api_key = os.getenv("GROQ_API_KEY")
+        self.llm_available = GROQ_AVAILABLE and bool(api_key)
+        self.model = "llama-3.1-70b-versatile"
 
+        if self.llm_available:
+            try:
+                self.client = Groq(api_key=api_key)
+                print("[RCAAgent] ✅ Groq LLM (Llama 3.1) initialized.")
+            except Exception as e:
+                print(f"[RCAAgent] ⚠️ Groq init failed: {e}. Falling back to RAG-only mode.")
+                self.llm_available = False
+        else:
+            print("[RCAAgent] ℹ️ No GROQ_API_KEY. Using RAG-only analysis (add key to .env for LLM mode).")
+
+    def analyze_incident(self, metrics_snapshot: dict, recent_logs: dict, incident_id: str = None) -> dict:
+        """
+        Analyzes an incident using Groq LLM + RAG.
+        Returns analysis dict compatible with engine.py.
+        """
+        # 1. Extract symptoms
+        symptoms = self._extract_symptoms(metrics_snapshot, recent_logs)
         query_context = ", ".join(symptoms)
-        
-        # 2. Retrieve RAG context
-        rag_results = self.kb.search(query_context, n_results=1)
-        
-        # Defaults
-        past_incident = "No similar history found."
-        params = {}
-        distance = 1.0 # Default high distance (low confidence)
-        
-        if rag_results and rag_results['documents'] and len(rag_results['documents'][0]) > 0:
-             past_incident = rag_results['documents'][0][0]
-             params = rag_results['metadatas'][0][0]
-             if 'distances' in rag_results and rag_results['distances'][0]:
-                 distance = rag_results['distances'][0][0]
 
-        # 3. Dynamic Analysis based on RAG
-        # Calculate Confidence: Using inverse distance (Closer = Higher Confidence)
-        # ChromaDB Cosine distance: 0 = exact match, 1 = orthogonal, 2 = opposite.
-        # Simple heuristic: confidence = 1 / (1 + distance)
-        confidence = 1.0 / (1.0 + distance)
-        
-        # Extract Knowledge from Historical Match
-        matched_action = params.get('recommended_action', 'Escalate to L3')
-        matched_cause = params.get('root_cause', 'Unknown Anomaly')
-        matched_severity = params.get('severity', 'P2')
-        matched_summary = params.get('summary', 'Unknown Incident')
+        # 2. RAG retrieval
+        rag_results = self.kb.search(query_context, n_results=3)
+        hypotheses = self._parse_rag_results(rag_results, query_context)
 
-        analysis_text = f"**Observation**: System is experiencing {', '.join(symptoms)}.\n"
-        analysis_text += f"**Context**: The symptoms are chemically similar (Distance: {distance:.2f}) to historic incident: *'{matched_summary}'*.\n"
-        analysis_text += f"**Inference**: Based on historical resolution patterns, this matches the signature of *{matched_cause}*."
+        # Fallback hypothesis
+        if not hypotheses:
+            hypotheses.append({
+                "root_cause": "Unknown Anomaly",
+                "action": "Escalate to L3",
+                "confidence": 0.1,
+                "reasoning": "No RAG matches found."
+            })
 
-        # Decision Logic
-        recommendation = matched_action
-        root_cause = matched_cause
-        severity = matched_severity
-        escalation_reason = None
+        hypotheses.sort(key=lambda x: x["confidence"], reverse=True)
+        top = hypotheses[0]
 
-        # Policy: If confidence is low, strictly escalate
-        if confidence < 0.65:
-            recommendation = "Escalate to L3"
-            escalation_reason = f"Low confidence ({confidence:.2f}) in diagnosis. Signature does not strongly match known incidents."
-            severity = "P2"
-            root_cause = "Ambiguous Anomaly Signature"
-        
-        # Override for 'Service Down' - heuristic override is still useful for critical safety
-        if "Service Unavailable" in str(symptoms) and confidence < 0.9:
-             # Safety net: If service is down, we usually always want to restart unless we are sure.
-             # But for pure RAG demo, let's trust the RAG if it finds the Service Down incident.
-             pass
+        # 3. LLM-enhanced root cause analysis
+        if self.llm_available:
+            llm_analysis = self._llm_analyze(symptoms, top, metrics_snapshot, recent_logs)
+            root_cause = llm_analysis.get("root_cause", top["root_cause"])
+            reasoning = llm_analysis.get("reasoning", top["reasoning"])
+            summary = llm_analysis.get("summary", query_context + ".")
+            action = llm_analysis.get("action", top["action"])
+        else:
+            root_cause = top["root_cause"]
+            reasoning = top["reasoning"]
+            summary = self._build_summary(symptoms, recent_logs)
+            action = top["action"]
+
+        # 4. Severity and approval logic
+        severity = self._calculate_severity(metrics_snapshot)
+        needs_approval = not (top["confidence"] > 0.85 and "Restart" in action)
 
         return {
-            "summary": f"Detected {', '.join(symptoms)}",
-            "root_cause": root_cause,
-            "analysis": analysis_text,
-            "recommended_action": recommendation,
-            "rag_context": past_incident,
+            "incident_id": incident_id,
+            "hypotheses": hypotheses,
+            "top_recommendation": action,
+            "action": action,
             "severity": severity,
-            "confidence": confidence,
-            "escalation_reason": escalation_reason
+            "needs_approval": needs_approval,
+            "summary": summary,
+            "evidence": query_context,
+            "root_cause": root_cause,
+            "reasoning": reasoning,
+            "confidence": top["confidence"],
+            "llm_powered": self.llm_available,
         }
+
+    # ── Private Helpers ──────────────────────────────────────────────────────
+
+    def _extract_symptoms(self, metrics: dict, recent_logs: dict) -> list:
+        symptoms = []
+        if metrics.get("cpu_percent", 0) > 80:
+            symptoms.append(f"High CPU ({metrics['cpu_percent']:.1f}%)")
+        if metrics.get("memory_percent", 0) > 90:
+            symptoms.append(f"High Memory ({metrics['memory_percent']:.1f}%)")
+        if metrics.get("latency_seconds", 0) > 2.0:
+            symptoms.append(f"High Latency ({metrics['latency_seconds']:.2f}s)")
+        error_count = recent_logs.get("recent_errors", 0)
+        if error_count > 0:
+            symptoms.append(f"{error_count} Errors/sec")
+        log_samples = recent_logs.get("log_samples", [])
+        for log in log_samples[:2]:
+            if "Exception" in log or "ERROR" in log:
+                symptoms.append(f"Log: {log[:60]}...")
+        return symptoms
+
+    def _parse_rag_results(self, rag_results: dict, query_context: str) -> list:
+        hypotheses = []
+        if not rag_results or not rag_results.get("documents"):
+            return hypotheses
+        for i, doc in enumerate(rag_results["documents"][0]):
+            meta = rag_results["metadatas"][0][i]
+            dist = rag_results["distances"][0][i]
+            confidence = round(1.0 / (1.0 + dist), 3)
+            hypotheses.append({
+                "root_cause": meta.get("root_cause", "Unknown"),
+                "action": meta.get("recommended_action", "Escalate"),
+                "confidence": confidence,
+                "reasoning": f"Matches past incident: {meta.get('summary', '')} (conf: {confidence:.2f}). Evidence: {query_context[:80]}..."
+            })
+        return hypotheses
+
+    def _llm_analyze(self, symptoms: list, top_hyp: dict, metrics: dict, logs: dict) -> dict:
+        try:
+            symptom_str = ", ".join(symptoms) if symptoms else "anomalous behaviour"
+            log_samples = logs.get("log_samples", [])
+            log_str = "; ".join(log_samples[:3]) if log_samples else "No recent logs."
+
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert IT SRE performing root cause analysis. "
+                            "Analyze the incident and respond ONLY as JSON with keys: "
+                            "root_cause, action, reasoning, summary. "
+                            "Keep each field under 80 words. Be specific and technical."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Symptoms: {symptom_str}\n"
+                            f"Recent Logs: {log_str}\n"
+                            f"KB Top Match — Root Cause: {top_hyp['root_cause']}, Action: {top_hyp['action']}\n"
+                            f"CPU: {metrics.get('cpu_percent', 0):.1f}%, "
+                            f"Memory: {metrics.get('memory_percent', 0):.1f}%, "
+                            f"Latency: {metrics.get('latency_seconds', 0):.2f}s\n\n"
+                            f"Provide enhanced root cause analysis as JSON."
+                        )
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=350
+            )
+            content = response.choices[0].message.content.strip()
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start != -1 and end > start:
+                return json.loads(content[start:end])
+            return {}
+        except Exception as e:
+            print(f"[RCAAgent] LLM error: {e}")
+            return {}
+
+    def _build_summary(self, symptoms: list, logs: dict) -> str:
+        parts = list(symptoms)
+        samples = logs.get("log_samples", [])
+        if samples:
+            parts.append(f"Log samples indicate application errors.")
+        return ". ".join(parts) + "." if parts else "Anomaly detected."
+
+    def _calculate_severity(self, metrics: dict) -> str:
+        cpu = metrics.get("cpu_percent", 0)
+        mem = metrics.get("memory_percent", 0)
+        lat = metrics.get("latency_seconds", 0)
+        if cpu > 95 or mem > 95 or lat > 5:
+            return "P1"
+        elif cpu > 80 or mem > 85 or lat > 2:
+            return "P2"
+        elif cpu > 70 or mem > 75 or lat > 1:
+            return "P3"
+        return "P4"
