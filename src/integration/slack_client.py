@@ -1,4 +1,5 @@
 import json
+import os
 import requests
 from datetime import datetime
 
@@ -58,7 +59,7 @@ class SlackNotifier:
 
         # Use an environment variable or config for the callback URL in real life
         # Automatically updated by Antigravity based on active tunnel
-        callback_info = "CALLBACK_URL: https://mindy-hyetographical-roseann.ngrok-free.dev/slack/actions" 
+        callback_info = f"CALLBACK_URL: {os.getenv('SLACK_CALLBACK_URL', 'http://localhost:8000/slack/actions')}"
 
         if self.mock:
             print(f"[Slack Mock] Posting to {self.channel}:")
