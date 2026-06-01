@@ -62,6 +62,7 @@ from src.integration.slack_client import SlackNotifier
 from src.integration.jira_client import JiraConnector
 from src.agent.orchestrator import OrchestratorAgent
 from src.agent.llm_client import LLMClient
+from src.agent.message_bus import MessageBus
 
 
 class EngineRuntime:
@@ -80,6 +81,7 @@ class EngineRuntime:
             mock=False,
         )
         self.engine.set_mode(SimulationMode.SIMULATION)
+        self.engine.message_bus = MessageBus()
         self.engine.llm_client = LLMClient()
         self.engine.orchestrator = OrchestratorAgent(
             bus=self.engine.message_bus,
