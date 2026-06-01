@@ -5,7 +5,9 @@ import uuid
 class KnowledgeBase:
     def __init__(self):
         # Using a simple in-memory client for demo portability, or persistent local directory
-        self.client = chromadb.PersistentClient(path="./data/chroma_db")
+        import os
+        chroma_path = os.environ.get("CHROMA_PATH", "./data/chroma_db")
+        self.client = chromadb.PersistentClient(path=chroma_path)
         self.collection = self.client.get_or_create_collection(name="incidents")
         self.is_populated = False
 

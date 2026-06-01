@@ -1,0 +1,36 @@
+services:
+  # ── Backend (FastAPI) ──────────────────────────────────────────
+  - type: web
+    name: ops-agent-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+      - key: SLACK_CALLBACK_URL
+        sync: false
+      - key: JIRA_URL
+        sync: false
+      - key: JIRA_USERNAME
+        sync: false
+      - key: JIRA_API_TOKEN
+        sync: false
+      - key: JIRA_PROJECT_KEY
+        value: KAN
+      - key: NGROK_AUTH_TOKEN
+        sync: false
+      - key: CHROMA_PATH
+        value: /tmp/chroma_db
+
+  # ── Frontend (React/Vite static site) ─────────────────────────
+  - type: web
+    name: ops-agent-frontend
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false   # set to your backend URL after first deploy
