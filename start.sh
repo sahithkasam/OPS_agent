@@ -104,7 +104,7 @@ trap cleanup INT TERM EXIT
 
 if [ "$MODE" = "all" ] || [ "$MODE" = "backend" ]; then
   ok "backend  → http://localhost:8000  (FastAPI)"
-  uvicorn api.server:app --port 8000 --host 127.0.0.1 \
+  python3 -m uvicorn api.server:app --port 8000 --host 127.0.0.1 \
     2>&1 | sed -u 's/^/[backend ] /' &
   PIDS+=($!)
 fi

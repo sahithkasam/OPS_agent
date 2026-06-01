@@ -1,4 +1,4 @@
-const BASE = '/api';
+const BASE = (import.meta.env.VITE_API_URL || '') + '/api';
 
 async function req(path, opts = {}) {
   const r = await fetch(BASE + path, {
@@ -27,7 +27,7 @@ export const api = {
 };
 
 export function subscribeEvents(onState) {
-  const es = new EventSource(BASE + '/events');
+  const es = new EventSource((import.meta.env.VITE_API_URL || '') + '/api/events');
   es.onmessage = (e) => {
     try { onState(JSON.parse(e.data)); } catch {}
   };

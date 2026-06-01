@@ -89,7 +89,7 @@ class SimulationEngine:
         self.tick_count += 1
         
         # Ensure Agent is Alive (Resuscitation for st.fragment)
-        if self.agent is None:
+        if self.agent is None and not getattr(self, 'orchestrator', None):
             try:
                 self.agent = RCAAgent()
             except Exception as e:
@@ -178,25 +178,30 @@ class SimulationEngine:
                     self.state_tracker.update_incident_state(incident.id, IncidentState.INVESTIGATING, self.tick_count)
                 
                 # Analyze
-                if local_agent:
-                    self.log(f"[Agent] Analyzing Incident {incident.id} via {'LangGraph Pipeline' if self.pipeline else 'RCAAgent'}...")
+                orchestrator = getattr(self, 'orchestrator', None)
+                if orchestrator or local_agent:
                     features = self.observation_window.get_features()
-                    if hasattr(local_agent, 'analyze_incident'):
-                        try:
-                            # Use full multi-agent LangGraph pipeline if available
-                            if self.pipeline:
-                                analysis = self.pipeline.run(
-                                    incident_id=incident.id,
-                                    incident_type=incident.type.value,
-                                    metrics=self.metrics,
-                                    log_features=features
-                                )
-                            else:
-                                analysis = local_agent.analyze_incident(self.metrics, features, incident_id=incident.id)
+                    try:
+                        if orchestrator:
+                            self.log(f"[Agent] Analyzing Incident {incident.id} via Multi-Agent Orchestrator...")
+                            analysis = orchestrator.process_incident(
+                                metrics_snapshot=self.metrics,
+                                log_features=features,
+                                incident_id=incident.id,
+                                context={
+                                    'slack_sent': getattr(incident, 'slack_sent', False),
+                                    'jira_ticket_key': getattr(incident, 'jira_ticket_key', None),
+                                    'incident_type': incident.type.value,
+                                }
+                            )
+                        elif hasattr(local_agent, 'analyze_incident'):
+                            self.log(f"[Agent] Analyzing Incident {incident.id} via RCAAgent...")
+                            analysis = local_agent.analyze_incident(self.metrics, features, incident_id=incident.id)
+                        else:
+                            analysis = None
 
-                            # Store analysis Persistently on the incident
+                        if analysis is not None:
                             incident.analysis = analysis
-
                             self.metrics['latest_analysis'] = analysis
                             self.metrics['agent_active'] = True
 
@@ -206,20 +211,16 @@ class SimulationEngine:
                                 self.log(f"[Slack] Response: {resp}")
                                 incident.slack_sent = True
 
-                            # Create Jira Ticket (Auto)
                             if local_jira and not incident.jira_ticket_key:
                                 self.log(f"[Engine] Creating Jira Ticket for {incident.id} (MockMode={local_jira.mock})")
-
                                 root_cause_short = analysis.get('root_cause', 'Unknown Issue')[:100]
                                 jira_summary = f"[AI Ops] {incident.type.value} - {root_cause_short}"
-
                                 raw_summary = analysis.get('summary', "No details.")
                                 jira_description = (
                                     f"**Root Cause Analysis**\n{analysis.get('root_cause')}\n\n"
                                     f"**Symptoms**\n{raw_summary}\n\n"
                                     f"**Recommended Action**\n{analysis.get('top_recommendation')}"
                                 )
-
                                 ticket_key = local_jira.create_ticket({
                                     'summary': jira_summary,
                                     'root_cause': jira_description,
@@ -231,12 +232,10 @@ class SimulationEngine:
                                     incident.jira_ticket_key = None
                                 else:
                                     incident.jira_ticket_key = ticket_key
-                        except Exception as e:
-                            self.log(f"[Agent Error] Analysis failed: {e}")
-                            import traceback
-                            traceback.print_exc()
-                else:
-                    self.log(f"[Engine] WARNING: Agent is None despite resuscitation.")
+                    except Exception as e:
+                        self.log(f"[Agent Error] Analysis failed: {e}")
+                        import traceback
+                        traceback.print_exc()
 
         # 5. External Polling (Jira Sync)
         # Check if any active incidents have been resolved externally in Jira
