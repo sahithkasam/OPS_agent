@@ -1,3 +1,46 @@
+# Environment
+.env
+.env.*
 
-.env
-.env
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Logs
+*.log
+logs/
+
+# Archives / local exports
+*.zip
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data / Runtime
+data/chroma_db/
+data/app_logs.log
+data/pending_actions.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local application drafts
+application_materials/

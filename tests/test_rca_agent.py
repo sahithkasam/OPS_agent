@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.agent.rca_agent import RCAAgent
+from src.agent.message_bus import AgentMessage, MessageType
 
 
 @pytest.fixture
@@ -68,3 +69,33 @@ def test_needs_approval_default_true(agent):
     result = agent.analyze_incident(metrics, logs)
     # Default = needs approval (except very high confidence auto-actions)
     assert isinstance(result["needs_approval"], bool)
+
+
+def test_handle_message_uses_nested_pipeline_context(agent):
+    """Current orchestrator payloads should drive RCA query context."""
+    message = AgentMessage(
+        type=MessageType.RCA_REQUEST,
+        sender="orchestrator",
+        recipient="rca",
+        incident_id="test-002",
+        payload={
+            "triage_report": {
+                "symptoms": ["High CPU (92.0%)"],
+                "metrics_snapshot": {
+                    "cpu_percent": 92.0,
+                    "memory_percent": 55.0,
+                    "latency_seconds": 0.4,
+                },
+                "log_features": {"recent_errors": 0, "log_samples": []},
+            },
+            "diagnostic_report": {
+                "query_context": "High CPU (92.0%), 504 Gateway Timeout",
+            },
+        },
+    )
+
+    result = agent.handle_message(message)
+
+    assert result.type == MessageType.RCA_RESULT
+    assert result.payload["hypotheses"]
+    assert "cpu" in result.payload["summary"].lower()

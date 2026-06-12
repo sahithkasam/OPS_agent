@@ -372,21 +372,36 @@ def get_kb():
 
 @app.post("/slack/actions")
 async def slack_actions(request: Request):
-    form = await request.form()
-    raw = form.get("payload")
-    if not raw:
-        raise HTTPException(400, "No payload")
-    payload = json.loads(raw)
-    action = payload["actions"][0]
-    action_id = action["action_id"]
-    incident_id = action["value"]
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in content_type:
+        from urllib.parse import parse_qs
+        body = (await request.body()).decode()
+        form = parse_qs(body)
+        raw = form.get("payload", [None])[0]
+        if not raw:
+            raise HTTPException(400, "No payload")
+        payload = json.loads(raw)
+    else:
+        payload = await request.json()
+
+    actions = payload.get("actions", [])
+    if not actions:
+        return {"replace_original": False, "text": "No Slack action received"}
+
+    action = actions[0]
+    action_id = action.get("action_id")
+    incident_id = action.get("value")
+    if not incident_id:
+        raise HTTPException(400, "No incident id in Slack action")
 
     if action_id == "approve_action":
         runtime.engine.approve_action(incident_id)
         text = f"✅ Approved action for {incident_id}"
-    else:
+    elif action_id in ("escalate_action", "deny_action"):
         runtime.engine.deny_action(incident_id)
         text = f"🚨 Escalated {incident_id} to L3"
+    else:
+        return {"replace_original": False, "text": f"Unknown Slack action: {action_id}"}
 
     return {"replace_original": True, "text": text}
 
