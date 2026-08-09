@@ -17,6 +17,9 @@ class LLMClient:
       3. GROQ_API_KEY set      → Groq (Llama/Mixtral, fast inference)
       4. OPENAI_API_KEY set    → OpenAI (gpt-4o-mini)
       5. otherwise             → mock mode
+
+    Note: Groq default is openai/gpt-oss-120b (llama-3.3-70b-versatile
+    is deprecated on Groq as of 2026-08-16).
     """
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
@@ -43,7 +46,7 @@ class LLMClient:
             self.provider = "groq"
             self.api_key = groq_key
             self.base_url = "https://api.groq.com/openai/v1"
-            self.model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            self.model = model or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
         elif forced == "openai" or (not forced and openai_key):
             self.provider = "openai"
             self.api_key = openai_key
