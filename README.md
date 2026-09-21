@@ -51,7 +51,7 @@ Simulation Engine → Anomaly Detector → Agent Pipeline
 
 - **Backend** — Python, FastAPI, LangGraph, LangChain
 - **Frontend** — React, Vite
-- **LLM** — Groq (Llama 3.3 70B)
+- **LLM** — Groq ( GPT-OSS 120B)
 - **Vector DB** — ChromaDB
 - **Integrations** — Slack, Jira
 - **Deployment** — Render (backend), Vercel (frontend)
