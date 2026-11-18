@@ -287,6 +287,7 @@ def inject_logs(body: CommandBody):
     with open(log_path, "a") as f:
         f.write("\n" + body.text + "\n")
     runtime.engine.cooldown_until = 0
+    runtime.engine.manual_log_check = True
     runtime.engine.trigger_reanalysis()
     runtime.step()
     return json_response(runtime.snapshot())

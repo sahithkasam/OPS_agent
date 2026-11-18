@@ -31,7 +31,18 @@ class SimulationEngine:
         # Terminal Output Buffer for Web UI
         self.system_logs = []
         self.cooldown_until = 0
-        
+        # Log-based detection: new ERROR/CRITICAL lines in one tick needed to
+        # open an incident. A manually injected log line lowers it to 1 once.
+        self.AUTO_INCIDENT_MIN_ERRORS = 3
+        self.manual_log_check = False
+
+        # External dependencies (set by the API runtime after construction)
+        self.log_source = None
+        self.detector = None
+        self.agent = None
+        self.slack_notifier = None
+        self.jira_connector = None
+
     def log(self, message: str):
         """
         Logs a message to both stdout and the web terminal buffer.
@@ -43,14 +54,7 @@ class SimulationEngine:
         # Keep buffer manageable
         if len(self.system_logs) > 50:
             self.system_logs.pop(0)
-        
-        # External dependencies (to be set)
-        self.log_source = None
-        self.detector = None
-        self.agent = None
-        self.slack_notifier = None
-        self.jira_connector = None
-        
+
     def set_mode(self, mode: SimulationMode):
         self.mode = mode
         
@@ -129,28 +133,28 @@ class SimulationEngine:
             print(f"Log Write failed: {e}")
 
         # 2. Ingest Logs
+        new_logs = []
         if self.log_source:
             new_logs = self.log_source.fetch_new_logs()
             if new_logs:
                 self.observation_window.add_logs(new_logs)
-                # self.log(f"[Logs] Ingested {len(new_logs)} new log lines.") # Too noisy?
-            
+
         # 3. Detect & Update
         if self.detector:
             anomaly = self.detector.detect(self.metrics)
-                
+
         # 3b. Log Detection (Rule-based)
-        log_features = self.observation_window.get_features()
-        if log_features.get('recent_errors', 0) > 0 and not active_incidents:
-             # Check Cooldown
-             if self.tick_count < self.cooldown_until:
-                 # self.log(f"[Engine] Suppression active until {self.cooldown_until}")
-                 pass
-             else:
-                  self.log(f"[Engine] Log Anomaly Detected ({log_features['recent_errors']} errors). Auto-injecting.")
-                  # Default to service_down for generic log errors
-                  self.inject_incident("service_down", severity="P1")
-                
+        # React to a burst of *new* error lines, not to errors still sitting in
+        # the 100-line window: old lines would re-trigger after every cooldown,
+        # and healthy traffic has ~1% random 500s that must not page anyone.
+        new_errors = sum(1 for line in new_logs if "ERROR" in line or "CRITICAL" in line)
+        threshold = 1 if self.manual_log_check else self.AUTO_INCIDENT_MIN_ERRORS
+        self.manual_log_check = False
+        if new_errors >= threshold and not active_incidents and self.tick_count >= self.cooldown_until:
+            self.log(f"[Engine] Log Anomaly Detected ({new_errors} new error lines). Auto-injecting.")
+            # Default to service_down for generic log errors
+            self.inject_incident("service_down", severity="P1")
+
         # 4. Agent Logic (Auto-Investigate)
         # If there is an active incident in DEGRADED mode, trigger Agent
         active_list = self.state_tracker.get_active()
@@ -195,6 +199,16 @@ class SimulationEngine:
                             self.metrics['latest_analysis'] = analysis
                             self.metrics['agent_active'] = True
 
+                        if analysis is not None and orchestrator:
+                            # The Communications agent already sent Slack and created
+                            # the Jira ticket inside the pipeline. Record that on the
+                            # incident so re-analysis doesn't notify again.
+                            if analysis.get('slack_sent'):
+                                incident.slack_sent = True
+                            if analysis.get('jira_ticket_key'):
+                                incident.jira_ticket_key = analysis['jira_ticket_key']
+                        elif analysis is not None:
+                            # Legacy single-agent path (no Communications agent).
                             if local_slack and not getattr(incident, 'slack_sent', False):
                                 self.log(f"[Engine] Sending Slack Alert for {incident.id}")
                                 resp = local_slack.post_incident(analysis, ticket_id=incident.id)
