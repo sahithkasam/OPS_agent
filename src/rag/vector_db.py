@@ -81,13 +81,73 @@ class KnowledgeBase:
             print(f"[KB] No incidents found in {self.dataset_path}")
             return
 
-        self.collection.add(
-            ids=[item["id"] for item in data],
-            documents=[document_text(item) for item in data],
-            metadatas=[{k: _scalar(v) for k, v in item.items()} for item in data],
-        )
+        vectors = self._load_precomputed(data)
+        # Small batches either way: with precomputed vectors this only bounds
+        # request size; without them it bounds the ONNX model's activation
+        # memory (all 220 at once peaks ~580 MB, past a 512 MB Render instance).
+        batch = max(1, int(os.environ.get("KB_INDEX_BATCH", "8")))
+        for start in range(0, len(data), batch):
+            chunk = data[start:start + batch]
+            kwargs = {}
+            if vectors is not None:
+                kwargs["embeddings"] = vectors[start:start + batch]
+            self.collection.add(
+                ids=[item["id"] for item in chunk],
+                documents=[document_text(item) for item in chunk],
+                metadatas=[{k: _scalar(v) for k, v in item.items()} for item in chunk],
+                **kwargs,
+            )
         self.is_populated = True
-        print(f"[KB] Indexed {len(data)} incidents into '{self.collection_name}'.")
+        source = "precomputed embeddings" if vectors is not None else "embedded at startup"
+        print(f"[KB] Indexed {len(data)} incidents into '{self.collection_name}' ({source}).")
+
+    # ---- Precomputed embeddings -------------------------------------------
+    # Embedding 220 postmortems at startup costs ~70 MB of extra peak memory and
+    # Render's disk is wiped on every deploy, so the vectors are computed once
+    # (save_precomputed) and shipped next to the dataset. They are only used
+    # when they were made from this exact dataset file and model.
+
+    @property
+    def embeddings_path(self) -> Path:
+        return self.dataset_path.with_suffix(".embeddings.npz")
+
+    def _load_precomputed(self, data: list):
+        import numpy as np
+        path = self.embeddings_path
+        if not path.exists():
+            return None
+        try:
+            npz = np.load(path, allow_pickle=False)
+            ok = (
+                str(npz["dataset_hash"]) == self._dataset_hash()
+                and str(npz["model"]) == EMBEDDING_MODEL
+                and list(npz["ids"]) == [item["id"] for item in data]
+            )
+            if not ok:
+                print(f"[KB] {path.name} doesn't match the dataset; embedding at startup instead.")
+                return None
+            return npz["vectors"].astype("float32").tolist()
+        except Exception as e:
+            print(f"[KB] Could not read {path.name} ({e}); embedding at startup instead.")
+            return None
+
+    def save_precomputed(self, batch: int = 8) -> Path:
+        """Compute embeddings for the dataset and write them next to it."""
+        import numpy as np
+        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+        data = self.load_items()
+        ef = DefaultEmbeddingFunction()
+        vectors = []
+        for start in range(0, len(data), batch):
+            vectors.extend(ef([document_text(item) for item in data[start:start + batch]]))
+        np.savez_compressed(
+            self.embeddings_path,
+            vectors=np.asarray(vectors, dtype="float32"),
+            ids=np.asarray([item["id"] for item in data]),
+            dataset_hash=np.asarray(self._dataset_hash()),
+            model=np.asarray(EMBEDDING_MODEL),
+        )
+        return self.embeddings_path
 
     def load_items(self) -> list:
         try:

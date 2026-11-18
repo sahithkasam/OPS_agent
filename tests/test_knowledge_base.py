@@ -73,6 +73,16 @@ def test_unfiltered_search_falls_back(kb):
     assert len(res["ids"][0]) == 3
 
 
+def test_precomputed_embeddings_match_dataset(items):
+    """Shipped embeddings must be regenerated whenever the dataset changes,
+    otherwise small deploys fall back to embedding at startup (and can OOM)."""
+    kb = KnowledgeBase.__new__(KnowledgeBase)
+    kb.dataset_path = DATASET
+    vectors = kb._load_precomputed(items)
+    assert vectors is not None, "run KnowledgeBase().save_precomputed() after changing the dataset"
+    assert len(vectors) == len(items) and len(vectors[0]) == 384
+
+
 def test_parser_skips_security_incidents():
     md = (
         "## Config Errors\n\n"

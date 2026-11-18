@@ -421,6 +421,15 @@ def main():
           f"{len(records) - llm_used} rule-based)")
     if llm and llm_used < len(records):
         print("Run the same command again to retry the rule-based ones; finished entries are skipped.")
+
+    # Ship embeddings with the dataset so small hosts (Render free tier, 512 MB)
+    # don't have to embed everything at startup.
+    try:
+        from src.rag.vector_db import KnowledgeBase
+        emb = KnowledgeBase(args.out).save_precomputed()
+        print(f"Saved precomputed embeddings to {emb}")
+    except Exception as e:
+        print(f"Could not precompute embeddings ({e}); the backend will embed at startup instead.")
     for cat in CATEGORIES:
         print(f"  {cat:<16} {counts.get(cat, 0)}")
 

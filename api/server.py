@@ -2,9 +2,16 @@
 
 Run: uvicorn api.server:app --reload --port 8000
 """
+import os
+
+# Keep numeric libraries single-threaded. Each extra BLAS/ONNX thread reserves
+# its own buffers, and small hosts (Render free tier: 512 MB, shared CPU) gain
+# nothing from them. Must be set before numpy / onnxruntime are imported.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import asyncio
 import json
-import os
 import sys
 import threading
 import time
