@@ -94,7 +94,8 @@ class OrchestratorAgent:
             incident_id=incident_id,
             payload={
                 'metrics_snapshot': metrics_snapshot,
-                'log_features': log_features
+                'log_features': log_features,
+                'severity_hint': context.get('severity_hint'),
             }
         )
         triage_result = self.bus.send(triage_msg)
@@ -143,7 +144,8 @@ class OrchestratorAgent:
             incident_id=incident_id,
             payload={
                 'diagnostic_report': diag_payload,
-                'triage_report': triage_payload
+                'triage_report': triage_payload,
+                'incident_type': context.get('incident_type'),
             }
         )
         rca_result = self.bus.send(rca_msg)
@@ -180,7 +182,8 @@ class OrchestratorAgent:
                     incident_id=incident_id,
                     payload={
                         'diagnostic_report': diag_payload,
-                        'triage_report': expanded_triage
+                        'triage_report': expanded_triage,
+                        'incident_type': context.get('incident_type'),
                     }
                 )
                 rca_result2 = self.bus.send(rca_msg2)

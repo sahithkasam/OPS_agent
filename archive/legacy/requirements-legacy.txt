@@ -1,0 +1,13 @@
+# Extra dependencies needed ONLY by the archived legacy stack in this folder.
+# Install these in addition to the root requirements.txt to run the old
+# Streamlit + Flask/ngrok + real-LangGraph multi-agent pipeline.
+pandas
+plotly
+streamlit
+flask
+pyngrok
+langgraph
+langchain
+langchain-community
+langchain-groq
+watchdog

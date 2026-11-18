@@ -51,6 +51,12 @@ class TriageAgent(BaseAgent):
         urgency_score = self._calculate_urgency(metrics, error_count)
         severity = self._classify_severity(urgency_score)
 
+        # An operator-supplied severity hint can raise (never lower) severity.
+        hint = message.payload.get('severity_hint')
+        if hint in ("P1", "P2", "P3") and hint < severity:
+            symptoms.append(f"Severity raised {severity}→{hint} by operator hint")
+            severity = hint
+
         # ---- LLM Enhancement (if available) ----
         llm_summary = None
         if self.llm and self.llm.is_active:

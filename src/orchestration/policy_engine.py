@@ -8,7 +8,11 @@ class PolicyEngine:
             "Restart Service", 
             "Scale Resources", 
             "Rollback Deployment", 
-            "Clear Cache"
+            "Clear Cache",
+            "Reroute Traffic",
+            "Failover Database",
+            "Renew Certificate",
+            "Free Disk Space",
         ]
         
         # Actions that are never allowed by L1/L2 agent

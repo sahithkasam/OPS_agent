@@ -11,11 +11,6 @@ from .metrics_generator import MetricsGenerator
 from .logs_generator import LogGenerator
 from .observations import ObservationWindow
 from src.agent.rca_agent import RCAAgent
-try:
-    from src.orchestration.langgraph_pipeline import OpsPilotPipeline
-    PIPELINE_AVAILABLE = True
-except ImportError:
-    PIPELINE_AVAILABLE = False
 
 class SimulationMode(Enum):
     SIMULATION = "simulation"
@@ -32,16 +27,6 @@ class SimulationEngine:
         self.metrics_generator = MetricsGenerator()  # Fixed: was duplicated
         self.log_generator = LogGenerator()
         self.observation_window = ObservationWindow()
-
-        # Multi-Agent Pipeline (LangGraph) — Primary
-        # Falls back to RCAAgent if pipeline unavailable
-        self.pipeline = None
-        if PIPELINE_AVAILABLE:
-            try:
-                self.pipeline = OpsPilotPipeline()
-                print("[Engine] ✅ OpsPilot Multi-Agent Pipeline (LangGraph) initialized.")
-            except Exception as e:
-                print(f"[Engine] ⚠️ Pipeline init failed: {e}. Will use RCAAgent fallback.")
 
         # Terminal Output Buffer for Web UI
         self.system_logs = []
@@ -69,18 +54,22 @@ class SimulationEngine:
     def set_mode(self, mode: SimulationMode):
         self.mode = mode
         
-    def inject_incident(self, incident_type_str: str, severity="P2"):
+    def inject_incident(self, incident_type_str: str, severity=None):
         """
-        Manually inject an incident (e.g. from Dashboard)
+        Manually inject an incident (e.g. from Dashboard).
+        `severity` is an optional operator hint (P1/P2/P3) that triage may use
+        to raise the computed severity. Returns the incident, or None.
         """
         try:
-            # Map string to Enum
             itype = IncidentType(incident_type_str)
-            incident = ActiveIncident(itype, self.tick_count, severity)
-            result = self.state_tracker.register_incident(incident)
-            self.log(f"[Engine] Injected {itype.value} at Tick {self.tick_count}")
         except ValueError:
             self.log(f"[Engine] Unknown incident type: {incident_type_str}")
+            return None
+        incident = ActiveIncident(itype, self.tick_count, severity)
+        self.state_tracker.register_incident(incident)
+        hint = f" (severity hint {severity})" if severity else ""
+        self.log(f"[Engine] Injected {itype.value} at Tick {self.tick_count}{hint}")
+        return incident
 
     def tick(self):
         """
@@ -192,6 +181,7 @@ class SimulationEngine:
                                     'slack_sent': getattr(incident, 'slack_sent', False),
                                     'jira_ticket_key': getattr(incident, 'jira_ticket_key', None),
                                     'incident_type': incident.type.value,
+                                    'severity_hint': getattr(incident, 'severity', None),
                                 }
                             )
                         elif hasattr(local_agent, 'analyze_incident'):
@@ -317,7 +307,19 @@ class SimulationEngine:
                 "[Action] > Verifying Cert Chain...",
                 "[Action] > Requesting new Let's Encrypt Certificate...",
                 "[Action] > Deploying cert to Nginx Ingress...",
-                "[Action] > Reloading Nginx. Cert Valid until 2026."
+                "[Action] > Reloading Nginx. New cert valid for 90 days."
+            ],
+            IncidentType.BAD_DEPLOY: [
+                "[Action] > Identified faulty release v2.14.3 (deployed 6 min before alert)",
+                "[Action] > Halting rollout on remaining hosts...",
+                "[Action] > Rolling back to v2.14.2...",
+                "[Action] > Error rate back to baseline (0.2%)."
+            ],
+            IncidentType.DNS_FAILURE: [
+                "[Action] > Resolver returning SERVFAIL for db.internal",
+                "[Action] > Reverting last DNS zone change...",
+                "[Action] > Flushing resolver caches on affected nodes...",
+                "[Action] > DNS lookups succeeding; latency normal."
             ]
         }
         

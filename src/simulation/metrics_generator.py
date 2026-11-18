@@ -56,7 +56,7 @@ class MetricsGenerator:
                 metrics['latency_seconds'] = 0.01
                 
             elif itype == 'disk_usage_high':
-                metrics['disk_percent'] = max(getattr(metrics, 'disk_percent', 0), round(95 + random.uniform(-1, 2), 2))
+                metrics['disk_percent'] = max(metrics.get('disk_percent', 0), round(95 + random.uniform(-1, 2), 2))
 
             elif itype == 'process_crash':
                 metrics['latency_seconds'] = max(metrics['latency_seconds'], 2.0)
@@ -66,6 +66,15 @@ class MetricsGenerator:
                 
             elif itype == 'ssl_expiry':
                 pass # No metric effect
+
+            elif itype == 'bad_deploy':
+                # New build is throwing errors and retrying: CPU and latency both up.
+                metrics['cpu_percent'] = max(metrics['cpu_percent'], round(70 + random.uniform(-5, 8), 2))
+                metrics['latency_seconds'] = max(metrics['latency_seconds'], round(1.2 + random.uniform(0.1, 0.8), 4))
+
+            elif itype == 'dns_failure':
+                # Requests block on resolver timeouts.
+                metrics['latency_seconds'] = max(metrics['latency_seconds'], round(3.0 + random.uniform(0.2, 1.5), 4))
                 
         metrics['anomaly_active'] = ",".join(anomalies) if anomalies else None
         return metrics

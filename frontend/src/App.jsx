@@ -10,6 +10,8 @@ export default function App() {
   const [tab, setTab] = useState('live');
   const [state, setState] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [kb, setKb] = useState(null);       // { items, categories, index }
+  const [kbError, setKbError] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -20,11 +22,21 @@ export default function App() {
     }
   }, []);
 
+  const refreshKb = useCallback(async () => {
+    try {
+      setKb(await api.kb());
+      setKbError(null);
+    } catch (e) {
+      setKbError(e.message || String(e));
+    }
+  }, []);
+
   useEffect(() => {
     refresh();
+    refreshKb();
     const stop = subscribeEvents((s) => setState(s));
     return stop;
-  }, [refresh]);
+  }, [refresh, refreshKb]);
 
   // Auto-select first incident if none picked, or if previous selection is gone.
   useEffect(() => {
@@ -39,11 +51,12 @@ export default function App() {
   }, [state, selectedId]);
 
   const selected = state?.incidents?.find(i => i.id === selectedId) || null;
+  const kbCounts = kb?.categories || {};
 
   return (
     <AppShell tab={tab} onTab={setTab} state={state}>
       {tab === 'live' && (
-        <LiveScreen state={state} refresh={refresh}
+        <LiveScreen state={state} refresh={refresh} kbCounts={kbCounts}
           selectedId={selectedId} onSelect={setSelectedId} />
       )}
       {tab === 'workflow' && (
@@ -54,9 +67,11 @@ export default function App() {
         <AgentsScreen state={state} refresh={refresh} selected={selected}
           selectedId={selectedId} onSelect={setSelectedId} />
       )}
-      {tab === 'knowledge' && <KnowledgeScreen />}
-      {tab === 'history' && <HistoryScreen />}
-      {tab === 'sim' && <SimScreen state={state} refresh={refresh} />}
+      {tab === 'knowledge' && (
+        <KnowledgeScreen kb={kb} error={kbError} onRetry={refreshKb} state={state} />
+      )}
+      {tab === 'history' && <HistoryScreen onKbChange={refreshKb} />}
+      {tab === 'sim' && <SimScreen state={state} refresh={refresh} kbCounts={kbCounts} />}
     </AppShell>
   );
 }

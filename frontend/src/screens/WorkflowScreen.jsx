@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { severityTone } from '../agents.js';
 import { FlowPath } from '../components/FlowPath.jsx';
+import { typeLabel } from '../incidentTypes.js';
 
 const STAGE_KEYS = ['triage', 'diagnostics', 'rca', 'remediation', 'comms'];
 
@@ -91,7 +92,7 @@ export function WorkflowScreen({ state, selected, selectedId, onSelect }) {
       <h1>Agent workflow</h1>
       <div className="subtitle">
         {incident
-          ? <>Live pipeline for <span className="mono">{incident.id}</span> · {incident.type.replaceAll('_', ' ')}</>
+          ? <>Live pipeline for <span className="mono">{incident.id}</span> · {typeLabel(incident.type)}</>
           : 'No active incident — pipeline idle'}
       </div>
 
@@ -123,7 +124,7 @@ export function WorkflowScreen({ state, selected, selectedId, onSelect }) {
                   >
                     <span className={`dot ${isPulse ? 'pulse' : ''}`} style={{ background: dotColor }}></span>
                     <span className="mono-xs">{inc.id}</span>
-                    <span style={{ opacity: 0.85 }}>· {inc.type.replaceAll('_', ' ')}</span>
+                    <span style={{ opacity: 0.85 }}>· {typeLabel(inc.type)}</span>
                     <span className={`chip ${severityTone(sev)}`} style={{ padding: '0 6px', fontSize: 10 }}>{sev}</span>
                   </button>
                 );

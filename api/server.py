@@ -18,29 +18,37 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
 
-def _safe(obj, depth=0, seen=None):
-    """Strip non-JSON-safe values and break cycles."""
-    if seen is None:
-        seen = set()
+def _safe(obj, depth=0, ancestors=None):
+    """Strip non-JSON-safe values and break cycles.
+
+    Only objects on the current path (ancestors) count as cycles. The same
+    dict can legitimately appear twice (e.g. rca_report.top_root_cause is
+    also hypotheses[0]) and must be serialized both times.
+    """
+    if ancestors is None:
+        ancestors = set()
     if depth > 10:
         return None
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
     oid = id(obj)
-    if oid in seen:
+    if oid in ancestors:
         return None
     if isinstance(obj, dict):
-        seen.add(oid)
+        ancestors.add(oid)
         out = {}
         for k, v in obj.items():
             try:
-                out[str(k)] = _safe(v, depth + 1, seen)
+                out[str(k)] = _safe(v, depth + 1, ancestors)
             except Exception:
                 out[str(k)] = None
+        ancestors.discard(oid)
         return out
     if isinstance(obj, (list, tuple, set)):
-        seen.add(oid)
-        return [_safe(v, depth + 1, seen) for v in obj]
+        ancestors.add(oid)
+        out = [_safe(v, depth + 1, ancestors) for v in obj]
+        ancestors.discard(oid)
+        return out
     # Don't dive into arbitrary objects — too risky for cycles. Stringify.
     return str(obj)
 
@@ -63,6 +71,9 @@ from src.integration.jira_client import JiraConnector
 from src.agent.orchestrator import OrchestratorAgent
 from src.agent.llm_client import LLMClient
 from src.agent.message_bus import MessageBus
+from src.simulation.incident import IncidentType
+
+INCIDENT_TYPES = [t.value for t in IncidentType]
 
 
 class EngineRuntime:
@@ -124,7 +135,7 @@ class EngineRuntime:
         history_clean = [
             {k: v for k, v in (s.get("metrics", {}) or {}).items()
              if k not in ("latest_analysis", "agent_active")}
-            for s in self.tick_history[-60:]
+            for s in self.tick_history[-180:]
         ]
 
         return {
@@ -177,6 +188,7 @@ def _serialize_incident(inc) -> dict:
         "type": inc.type.value,
         "state": inc.state.value,
         "start_tick": inc.start_tick,
+        "severity_hint": getattr(inc, "severity", None),
         "jira_ticket_key": getattr(inc, "jira_ticket_key", None),
         "slack_sent": getattr(inc, "slack_sent", False),
         "analysis": inc.analysis,
@@ -207,7 +219,7 @@ app.add_middleware(
 
 class InjectBody(BaseModel):
     incident_type: str
-    severity: str = "P2"
+    severity: str | None = None  # optional operator hint: P1 / P2 / P3
 
 
 class CommandBody(BaseModel):
@@ -236,6 +248,10 @@ def post_auto(on: bool = True):
 
 @app.post("/api/inject")
 def post_inject(body: InjectBody):
+    if body.incident_type not in INCIDENT_TYPES:
+        raise HTTPException(400, f"Unknown incident type: {body.incident_type}")
+    if body.severity not in (None, "P1", "P2", "P3"):
+        raise HTTPException(400, f"Invalid severity: {body.severity}")
     runtime.engine.inject_incident(body.incident_type, body.severity)
     return json_response(runtime.snapshot())
 
@@ -322,9 +338,14 @@ class KBIngestBody(BaseModel):
     incident_id: str
 
 
+def _kb():
+    """The RCA agent's knowledge base (single shared Chroma client)."""
+    return runtime.engine.orchestrator.rca.kb
+
+
 @app.post("/api/kb/ingest")
 def kb_ingest(body: KBIngestBody):
-    """Add a resolved incident to the ChromaDB knowledge base."""
+    """Add a resolved incident from this session to the ChromaDB knowledge base."""
     eng = runtime.engine
     inc = next(
         (i for i in getattr(eng.state_tracker, "resolved_log", [])
@@ -334,55 +355,118 @@ def kb_ingest(body: KBIngestBody):
     if not inc:
         raise HTTPException(404, f"Resolved incident {body.incident_id} not found")
     a = inc.analysis or {}
+    symptoms = [s for s in a.get("triage_report", {}).get("symptoms", [])
+                if isinstance(s, str) and not s.startswith("[AI Insight]")][:5]
+    root_cause = a.get("root_cause") or (a.get("hypotheses") or [{}])[0].get("root_cause", "")
+    item = {
+        "id": f"live-{inc.id}",
+        "company": "This deployment",
+        "source": "live",
+        "source_url": "",
+        "section": "Live session",
+        "category": inc.type.value,
+        "summary": f"{inc.type.value.replace('_', ' ')} — {a.get('summary', '')}"[:200],
+        "description": a.get("summary", ""),
+        "symptoms": symptoms,
+        "logs_signature": ", ".join(symptoms),
+        "root_cause": root_cause,
+        "resolution": (
+            f"Escalated to L3 (operator denied '{a.get('top_recommendation', '')}')."
+            if inc.state.value == "ESCALATED"
+            else f"Operator approved and executed: {a.get('top_recommendation', '')}."
+        ),
+        "recommended_action": a.get("top_recommendation", ""),
+        "severity": a.get("severity", "P2"),
+        "duration": "",
+        "extraction": "live",
+    }
     try:
-        from src.rag.vector_db import KnowledgeBase
-        kb = KnowledgeBase()
-        root_cause = (a.get('hypotheses') or [{}])[0].get('root_cause', '')
-        text = (
-            f"Title: {a.get('summary','')}. "
-            f"Symptoms: {', '.join(a.get('triage_report', {}).get('symptoms', [])[:5])}. "
-            f"Cause: {root_cause}. "
-            f"Fix: {a.get('top_recommendation','')}."
-        )
-        meta = {
-            "id": f"live-{inc.id}",
-            "summary": a.get("summary", "")[:200],
-            "type": inc.type.value,
-            "severity": a.get("severity", "?"),
-            "root_cause": root_cause,
-            "resolution": a.get("top_recommendation", ""),
-        }
-        kb.collection.add(ids=[f"live-{inc.id}"], documents=[text], metadatas=[meta])
-        return {"ok": True, "indexed_id": f"live-{inc.id}"}
+        _kb().add_incident(item)
     except Exception as e:
         raise HTTPException(500, f"KB ingest failed: {e}")
+    return {"ok": True, "indexed_id": item["id"]}
 
 
 @app.get("/api/kb")
 def get_kb():
-    """Return all historical incidents indexed in the knowledge base."""
-    path = Path(__file__).resolve().parent.parent / "data" / "historical_incidents.json"
+    """Everything in the knowledge base, plus per-category counts and index stats."""
+    from src.rag.vector_db import EMBEDDING_MODEL, EMBEDDING_DIMS
+    kb = _kb()
+    items = kb.load_items()
+    live = kb.live_items()
+    for it in live:
+        if isinstance(it.get("symptoms"), str):
+            it["symptoms"] = [s for s in it["symptoms"].split(", ") if s]
+    all_items = live[::-1] + items  # newest live incidents first
+    counts = {t: 0 for t in INCIDENT_TYPES}
+    for it in all_items:
+        cat = it.get("category")
+        if cat in counts:
+            counts[cat] += 1
+    return json_response({
+        "items": all_items,
+        "count": len(all_items),
+        "categories": counts,
+        "index": {
+            "collection": kb.collection_name,
+            "documents": kb.collection.count(),
+            "embedding_model": EMBEDDING_MODEL,
+            "dims": EMBEDDING_DIMS,
+            "distance": "cosine",
+            "source": "github.com/danluu/post-mortems",
+        },
+    })
+
+
+def verify_slack_signature(raw_body: bytes, timestamp: str | None, signature: str | None,
+                           secret: str, now: float | None = None) -> bool:
+    """Check Slack's request signature (https://api.slack.com/authentication/verifying-requests-from-slack).
+
+    Slack signs every request with the app's Signing Secret:
+      v0=HMAC_SHA256(secret, "v0:{timestamp}:{raw body}")
+    Requests older than 5 minutes are rejected to stop replay attacks.
+    """
+    import hashlib
+    import hmac
+    if not timestamp or not signature:
+        return False
     try:
-        with open(path) as f:
-            incidents = json.load(f)
-    except Exception as e:
-        raise HTTPException(500, f"Failed to load KB: {e}")
-    return json_response({"items": incidents, "count": len(incidents)})
+        ts = int(timestamp)
+    except ValueError:
+        return False
+    if abs((now or time.time()) - ts) > 60 * 5:
+        return False
+    base = b"v0:" + timestamp.encode() + b":" + raw_body
+    expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
 
 
 @app.post("/slack/actions")
 async def slack_actions(request: Request):
+    raw_body = await request.body()
+    secret = os.getenv("SLACK_SIGNING_SECRET")
+    if secret:
+        if not verify_slack_signature(
+            raw_body,
+            request.headers.get("X-Slack-Request-Timestamp"),
+            request.headers.get("X-Slack-Signature"),
+            secret,
+        ):
+            raise HTTPException(401, "Invalid Slack signature")
+    else:
+        print("[Slack] WARNING: SLACK_SIGNING_SECRET not set; /slack/actions accepts unsigned requests.")
+
     content_type = request.headers.get("content-type", "")
     if "application/x-www-form-urlencoded" in content_type:
         from urllib.parse import parse_qs
-        body = (await request.body()).decode()
+        body = raw_body.decode()
         form = parse_qs(body)
         raw = form.get("payload", [None])[0]
         if not raw:
             raise HTTPException(400, "No payload")
         payload = json.loads(raw)
     else:
-        payload = await request.json()
+        payload = json.loads(raw_body or b"{}")
 
     actions = payload.get("actions", [])
     if not actions:

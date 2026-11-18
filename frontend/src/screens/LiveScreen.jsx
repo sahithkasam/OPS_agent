@@ -1,40 +1,45 @@
 import React, { useState } from 'react';
 import { api } from '../api.js';
-import { AGENTS, severityTone } from '../agents.js';
+import { severityTone } from '../agents.js';
+import { INCIDENT_TYPES, typeLabel } from '../incidentTypes.js';
+import { useBusy } from '../useBusy.js';
 import { MiniPipeline } from '../components/MiniPipeline.jsx';
 import { Sparkline } from '../components/Sparkline.jsx';
 import { PlaybookModal, extractPlaybookSteps } from '../components/PlaybookModal.jsx';
 
-const INC_TYPES = [
-  ['high_cpu', 'High CPU'],
-  ['memory_leak', 'Memory leak'],
-  ['network_latency', 'Network latency'],
-  ['service_down', 'Service down'],
-  ['disk_usage_high', 'Disk usage'],
-  ['process_crash', 'Process crash'],
-  ['database_lock', 'DB lock'],
-  ['ssl_expiry', 'SSL expiry'],
+// Signal window. The engine ticks every 2 s while running, so 30/90/180
+// ticks ≈ 1/3/6 minutes (the backend keeps the last 180 ticks).
+const WINDOWS = [
+  { ticks: 30, label: '1m' },
+  { ticks: 90, label: '3m' },
+  { ticks: 180, label: '6m' },
 ];
+const SEV_RANK = { P1: 0, P2: 1, P3: 2 };
 
-export function LiveScreen({ state, refresh, selectedId, onSelect }) {
-  const incidents = state?.incidents ?? [];
+export function LiveScreen({ state, refresh, kbCounts = {}, selectedId, onSelect }) {
+  const incidents = [...(state?.incidents ?? [])].sort((a, b) =>
+    (SEV_RANK[a.analysis?.severity] ?? 1) - (SEV_RANK[b.analysis?.severity] ?? 1)
+    || a.start_tick - b.start_tick);
   const selected = incidents.find(i => i.id === selectedId) || incidents[0];
   const [playbook, setPlaybook] = useState(null); // { incident, kind, steps }
+  const [windowTicks, setWindowTicks] = useState(WINDOWS[0].ticks);
+  const inject = useBusy();
+  const decide = useBusy();
 
-  const runAction = async (kind, incident) => {
+  const runAction = (kind, incident) => decide.run(kind, async () => {
     const beforeLogs = state?.logs || [];
     const after = kind === 'approve'
       ? await api.approve(incident.id)
       : await api.deny(incident.id);
     const steps = extractPlaybookSteps(beforeLogs, after?.logs, kind);
     setPlaybook({ incident, kind, steps });
-    refresh();
-  };
+    await refresh();
+  });
 
-  const history = (state?.metrics_history ?? []).filter(Boolean);
+  const history = (state?.metrics_history ?? []).filter(Boolean).slice(-windowTicks);
   const cpuSeries = history.map(m => m?.cpu_percent ?? 0);
   const memSeries = history.map(m => m?.memory_percent ?? 0);
-  const latSeries = history.map(m => (m?.latency_seconds ?? 0) * 100);
+  const latSeries = history.map(m => m?.latency_seconds ?? 0);
 
   return (
     <>
@@ -44,35 +49,29 @@ export function LiveScreen({ state, refresh, selectedId, onSelect }) {
         <div className="card">
           <div className="card-head">
             <div className="card-title">Open · {incidents.length}</div>
-            <div className="card-sub mono-xs">SORT · sev</div>
+            <div className="card-sub mono-xs">sorted by severity</div>
           </div>
           {incidents.length === 0 && (
             <div className="muted" style={{ fontSize: 13, padding: '12px 0' }}>No active incidents.</div>
           )}
           <div className="col" style={{ gap: 8 }}>
             {incidents.map(inc => {
-              const sev = inc.analysis?.severity || 'P2';
+              const sev = inc.analysis?.severity || inc.severity_hint || 'P2';
               const active = inc.id === selected?.id;
               return (
                 <button
                   key={inc.id}
                   onClick={() => onSelect(inc.id)}
-                  className="card"
-                  style={{
-                    textAlign: 'left',
-                    cursor: 'pointer',
-                    padding: 12,
-                    borderColor: active ? 'var(--ink)' : 'var(--line)',
-                    boxShadow: active ? 'var(--shadow-2)' : 'var(--shadow-1)',
-                    background: active ? 'var(--surface)' : 'var(--surface)',
-                  }}
+                  className={`card card-btn ${active ? 'selected' : ''}`}
+                  aria-pressed={active}
+                  style={{ padding: 12 }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span className="mono-xs muted">{inc.id}</span>
                     <span className={`chip ${severityTone(sev)}`}>{sev}</span>
                   </div>
                   <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 4 }}>
-                    {inc.type.replaceAll('_', ' ')}
+                    {typeLabel(inc.type)}
                   </div>
                   <div className="mono-xs muted" style={{ marginTop: 2 }}>
                     started tick {inc.start_tick} · {inc.state.toLowerCase()}
@@ -84,25 +83,32 @@ export function LiveScreen({ state, refresh, selectedId, onSelect }) {
         </div>
 
         <div className="card">
-          <div className="card-title" style={{ marginBottom: 8 }}>Inject incident</div>
+          <div className="card-title">Inject incident</div>
+          <div className="card-sub" style={{ marginBottom: 10 }}>
+            Each type is a category of real postmortems (count shown)
+          </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {INC_TYPES.map(([t, label]) => (
+            {INCIDENT_TYPES.map(t => (
               <button
-                key={t}
-                className="btn sm"
-                onClick={async () => { await api.inject(t); refresh(); }}
+                key={t.id}
+                className={`btn sm ${inject.busy === t.id ? 'is-pending' : ''}`}
+                disabled={!!inject.busy}
+                title={`${kbCounts[t.id] ?? 0} real postmortems in this category`}
+                onClick={() => inject.run(t.id, async () => { await api.inject(t.id); await refresh(); })}
               >
-                {label}
+                {t.label}
+                <span className="count">{kbCounts[t.id] ?? '·'}</span>
               </button>
             ))}
           </div>
+          {inject.error && <div className="form-error">{inject.error}</div>}
         </div>
       </div>
 
       {/* Focus */}
       <div className="col">
         {selected ? (
-          <FocusPanel incident={selected} runAction={runAction} />
+          <FocusPanel incident={selected} runAction={runAction} busy={decide.busy} error={decide.error} />
         ) : (
           <div className="empty">Select or inject an incident to view details.</div>
         )}
@@ -110,16 +116,22 @@ export function LiveScreen({ state, refresh, selectedId, onSelect }) {
         <div className="card">
           <div className="card-head">
             <div className="card-title">Live signals</div>
-            <div className="toggle">
-              <button className="on">5m</button>
-              <button>15m</button>
-              <button>1h</button>
+            <div className="toggle" role="group" aria-label="Signal window">
+              {WINDOWS.map(w => (
+                <button
+                  key={w.ticks}
+                  className={windowTicks === w.ticks ? 'on' : ''}
+                  aria-pressed={windowTicks === w.ticks}
+                  title={`Last ${w.ticks} ticks (≈${w.label} while running)`}
+                  onClick={() => setWindowTicks(w.ticks)}
+                >{w.label}</button>
+              ))}
             </div>
           </div>
           <div className="grid-3">
             <SignalCell label="CPU %" series={cpuSeries} value={state?.metrics?.cpu_percent} />
             <SignalCell label="Memory %" series={memSeries} value={state?.metrics?.memory_percent} />
-            <SignalCell label="Latency (s)" series={latSeries} value={state?.metrics?.latency_seconds} suffix="" />
+            <SignalCell label="Latency (s)" series={latSeries} value={state?.metrics?.latency_seconds} suffix="" digits={2} />
           </div>
         </div>
       </div>
@@ -153,24 +165,28 @@ export function LiveScreen({ state, refresh, selectedId, onSelect }) {
   );
 }
 
-function FocusPanel({ incident, runAction }) {
+function FocusPanel({ incident, runAction, busy, error }) {
   const a = incident.analysis;
-  const sev = a?.severity || 'P2';
+  const sev = a?.severity || incident.severity_hint || 'P2';
   const stages = a?.workflow_stages || {};
   const totalMs = a?.pipeline_duration_ms || 0;
   const top = a?.top_recommendation;
   const needsApproval = a?.needs_approval;
+  const match = a?.hypotheses?.[0];
+  const blocked = a?.remediation_plan?.safety_status === 'BLOCKED';
 
   return (
     <div className="card elevated">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
         <span className="mono-xs muted">{incident.id}</span>
         <span className={`chip ${severityTone(sev)}`}>{sev}</span>
-        {a && <span className="chip"><span className="dot amber pulse"></span>agents working</span>}
+        {!a && <span className="chip"><span className="dot amber pulse"></span>agents working</span>}
+        {a && needsApproval && <span className="chip amber">awaiting approval</span>}
+        {a && !needsApproval && <span className="chip">{blocked ? 'blocked by policy' : 'no approval required'}</span>}
         {incident.jira_ticket_key && <span className="chip blue">{incident.jira_ticket_key}</span>}
       </div>
       <h2 className="serif" style={{ margin: '4px 0 14px', fontSize: 24, fontWeight: 600, letterSpacing: '-0.01em' }}>
-        {incident.type.replaceAll('_', ' ')}
+        {typeLabel(incident.type)}
       </h2>
 
       <div style={{ marginBottom: 16 }}>
@@ -182,23 +198,29 @@ function FocusPanel({ incident, runAction }) {
       </div>
 
       <div className="grid-2">
-        <div>
+        <div style={{ minWidth: 0 }}>
           <div className="label" style={{ marginBottom: 6 }}>Summary</div>
           <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>{a?.summary || 'Awaiting diagnostics…'}</div>
         </div>
-        <div>
-          <div className="label" style={{ marginBottom: 6 }}>Top hypothesis</div>
-          {a?.hypotheses?.[0] ? (
+        <div style={{ minWidth: 0 }}>
+          <div className="label" style={{ marginBottom: 6 }}>Closest past incident</div>
+          {match ? (
             <>
-              <div style={{ fontSize: 13.5, fontWeight: 600 }}>{a.hypotheses[0].root_cause}</div>
+              <div style={{ fontSize: 13.5, fontWeight: 600 }}>{match.root_cause}</div>
+              {match.company && (
+                <div className="mono-xs muted" style={{ marginTop: 4 }}>
+                  {match.historical_id} · {match.company}
+                  {match.source_url && <> · <a href={match.source_url} target="_blank" rel="noreferrer">postmortem ↗</a></>}
+                </div>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
                 <div className="bar accent" style={{ flex: 1 }}>
-                  <span style={{ width: `${Math.round((a.hypotheses[0].confidence || 0) * 100)}%` }}></span>
+                  <span style={{ width: `${Math.round((match.confidence || 0) * 100)}%` }}></span>
                 </div>
-                <span className="mono-xs">{Math.round((a.hypotheses[0].confidence || 0) * 100)}%</span>
+                <span className="mono-xs" title="cosine similarity">{Math.round((match.confidence || 0) * 100)}% sim</span>
               </div>
             </>
-          ) : <div className="muted">No hypothesis yet.</div>}
+          ) : <div className="muted">No match yet.</div>}
         </div>
       </div>
 
@@ -209,23 +231,39 @@ function FocusPanel({ incident, runAction }) {
         </div>
       )}
 
-      {needsApproval && (
-        <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-          <button className="btn accent" onClick={() => runAction('approve', incident)}>Approve</button>
-          <button className="btn danger" onClick={() => runAction('deny', incident)}>Deny</button>
+      {a && (
+        <div style={{ marginTop: 14 }}>
+          {!needsApproval && (
+            <div className="mono-xs muted" style={{ marginBottom: 8 }}>
+              Policy did not require approval — resolve or escalate it manually.
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className={`btn accent ${busy === 'approve' ? 'is-pending' : ''}`}
+              disabled={!!busy}
+              onClick={() => runAction('approve', incident)}
+            >{busy === 'approve' ? 'Executing…' : needsApproval ? 'Approve' : 'Execute & resolve'}</button>
+            <button
+              className={`btn danger ${busy === 'deny' ? 'is-pending' : ''}`}
+              disabled={!!busy}
+              onClick={() => runAction('deny', incident)}
+            >{busy === 'deny' ? 'Escalating…' : needsApproval ? 'Deny' : 'Escalate'}</button>
+          </div>
+          {error && <div className="form-error">{error}</div>}
         </div>
       )}
     </div>
   );
 }
 
-function SignalCell({ label, series, value, suffix = '%' }) {
+function SignalCell({ label, series, value, suffix = '%', digits = 1 }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
         <div className="label">{label}</div>
         <div className="serif" style={{ fontSize: 18, fontWeight: 600 }}>
-          {value != null ? `${Number(value).toFixed(1)}${suffix}` : '—'}
+          {value != null ? `${Number(value).toFixed(digits)}${suffix}` : '—'}
         </div>
       </div>
       <Sparkline values={series} height={48} />

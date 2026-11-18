@@ -40,13 +40,13 @@ class LLMClient:
         elif forced == "ollama" or (not forced and os.getenv("OLLAMA_BASE_URL")):
             self.provider = "ollama"
             self.api_key = "ollama"  # Ollama ignores it, but the SDK requires non-empty
-            self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-            self.model = model or os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+            self.base_url = (os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434/v1")
+            self.model = model or (os.getenv("OLLAMA_MODEL") or "llama3.2:3b")
         elif forced == "groq" or (not forced and groq_key):
             self.provider = "groq"
             self.api_key = groq_key
             self.base_url = "https://api.groq.com/openai/v1"
-            self.model = model or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+            self.model = model or (os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b")
         elif forced == "openai" or (not forced and openai_key):
             self.provider = "openai"
             self.api_key = openai_key
@@ -61,6 +61,7 @@ class LLMClient:
         self.mock_mode = not bool(self.api_key)
         self.client = None
         self._call_count = 0
+        self.last_error = None
         self._total_tokens = 0
 
         if not self.mock_mode:
@@ -81,11 +82,15 @@ class LLMClient:
             print("[LLMClient] No API key. Running in MOCK mode (rule-based fallback).")
 
     def generate(self, system_prompt: str, user_prompt: str,
-                 max_tokens: int = 500, temperature: float = 0.3) -> Optional[str]:
+                 max_tokens: int = 500, temperature: float = 0.3,
+                 **extra) -> Optional[str]:
         """
         Generate a response from the LLM.
-        Returns None in mock mode (caller should use rule-based fallback).
+        Returns None in mock mode or on failure (caller should use rule-based
+        fallback); the failure reason is kept in `self.last_error`.
+        `extra` is passed to the API (e.g. reasoning_effort="low").
         """
+        self.last_error = None
         if self.mock_mode:
             return None
 
@@ -97,21 +102,23 @@ class LLMClient:
                     {"role": "user", "content": user_prompt}
                 ],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                **extra,
             )
             self._call_count += 1
             if response.usage:
                 self._total_tokens += response.usage.total_tokens
             return response.choices[0].message.content
         except Exception as e:
+            self.last_error = str(e)
             print(f"[LLMClient] API call failed: {e}")
             return None
 
     def generate_json(self, system_prompt: str, user_prompt: str,
-                      max_tokens: int = 800) -> Optional[dict]:
+                      max_tokens: int = 800, **extra) -> Optional[dict]:
         """Generate and parse a JSON response from the LLM."""
         json_system = system_prompt + "\n\nRespond ONLY with valid JSON. No markdown wrapping."
-        raw = self.generate(json_system, user_prompt, max_tokens=max_tokens, temperature=0.2)
+        raw = self.generate(json_system, user_prompt, max_tokens=max_tokens, temperature=0.2, **extra)
         if raw is None:
             return None
         try:

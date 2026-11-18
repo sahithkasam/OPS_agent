@@ -20,7 +20,7 @@ The system simulates a production environment and runs a multi-agent pipeline th
 
 ## Architecture
 
-The system is split into a React frontend, a FastAPI backend, and a multi-agent pipeline built with LangGraph.
+The system is split into a React frontend, a FastAPI backend, and a multi-agent pipeline that runs five specialized agents through a custom Python orchestrator (`src/agent/orchestrator.py`).
 
 ```
 Frontend (React/Vite)
@@ -49,9 +49,9 @@ Simulation Engine → Anomaly Detector → Agent Pipeline
 
 ## Tech Stack
 
-- **Backend** — Python, FastAPI, LangGraph, LangChain
+- **Backend** — Python, FastAPI, custom multi-agent orchestrator
 - **Frontend** — React, Vite
-- **LLM** — Groq ( GPT-OSS 120B)
+- **LLM** — Groq (GPT-OSS 120B)
 - **Vector DB** — ChromaDB
 - **Integrations** — Slack, Jira
 - **Deployment** — Render (backend), Vercel (frontend)
@@ -91,6 +91,21 @@ The frontend runs at `http://localhost:5173` and proxies API calls to the backen
 
 ---
 
+## Knowledge base (real postmortems)
+
+The RAG knowledge base (`data/historical_incidents.json`) contains 220 real public production postmortems from companies such as AWS, Google, Cloudflare, GitHub and Stripe, taken from [Dan Luu's post-mortems list](https://github.com/danluu/post-mortems). Security breaches are excluded. Each entry keeps a link to the original write-up and is normalized into the incident schema (category, symptoms, root cause, resolution, recommended action, severity).
+
+Every entry is assigned one of the simulator's 10 incident types. The RCA agent first searches only the injected incident's category (ChromaDB, `all-MiniLM-L6-v2` embeddings, cosine similarity), so a DNS incident is compared with past DNS outages.
+
+Rebuild it with:
+```bash
+python scripts/build_kb_from_postmortems.py           # uses the LLM if GROQ_API_KEY is set
+python scripts/build_kb_from_postmortems.py --no-llm  # deterministic rule-based extraction
+```
+The committed file was LLM-normalized with the same prompt rules for every entry: 28 entries by Groq (`openai/gpt-oss-120b`) and the remaining 192 by Claude after Groq's free-tier daily token limit was reached. Each record's `extraction` field says which model produced it. Every entry uses only facts stated in its summary, so the resolution is left empty when the summary doesn't say how the outage was fixed. Progress is saved after each entry, so an interrupted build resumes when you rerun the command; `--fresh` redoes everything with the configured LLM. The index rebuilds automatically when the file changes. The original synthetic dataset is kept in `archive/synthetic_incidents.json`.
+
+---
+
 ## Features
 
 - Real-time incident dashboard with live metrics and logs
@@ -99,3 +114,10 @@ The frontend runs at `http://localhost:5173` and proxies API calls to the backen
 - Knowledge base viewer with historical incidents
 - Incident history with KPIs (auto-resolved rate, average resolution time)
 - Slack interactive buttons for remote approvals
+
+---
+
+## Project layout notes
+
+- The test suite lives in `tests/` and covers the RCA agent, policy engine, and diagnostic tools (`pytest`).
+- `archive/legacy/` holds an earlier iteration of this project (a Streamlit dashboard, a Flask/ngrok webhook relay, and a real LangGraph-based agent pipeline) that predates the current React/FastAPI stack above. It isn't used by the live app — see [archive/legacy/README.md](archive/legacy/README.md) for details.

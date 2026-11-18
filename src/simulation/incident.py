@@ -20,6 +20,8 @@ class IncidentType(Enum):
     PROCESS_CRASH = "process_crash"
     DATABASE_LOCK = "database_lock"
     SSL_EXPIRY = "ssl_expiry"
+    BAD_DEPLOY = "bad_deploy"
+    DNS_FAILURE = "dns_failure"
 
 class ActiveIncident:
     def __init__(self, incident_type: IncidentType, start_tick: int, severity="P2"):

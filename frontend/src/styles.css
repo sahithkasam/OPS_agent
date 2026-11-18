@@ -256,22 +256,112 @@ a { color: inherit; }
   font-size: 13px;
   font-weight: 500;
   color: var(--ink);
-  transition: background 80ms, border-color 80ms;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease,
+              opacity 180ms ease, transform 90ms ease, filter 120ms ease;
+  -webkit-tap-highlight-color: transparent;
 }
-.btn:hover { background: var(--surface-2); border-color: var(--line-2); }
+.btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--line-2); }
 .btn.primary {
   background: var(--ink); color: var(--bg);
   border-color: var(--ink);
 }
-.btn.primary:hover { background: #2C2B29; }
+.btn.primary:hover:not(:disabled) { background: #2C2B29; border-color: #2C2B29; }
 .btn.accent {
   background: var(--accent); color: #FFFFFF;
   border-color: var(--accent);
 }
-.btn.accent:hover { filter: brightness(0.96); }
+.btn.accent:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); filter: brightness(0.93); }
 .btn.ghost { background: transparent; }
 .btn.danger { background: var(--red-soft); color: var(--red); border-color: transparent; }
+.btn.danger:hover:not(:disabled) { background: #EBC9C1; border-color: transparent; }
 .btn.sm { padding: 5px 10px; font-size: 12px; }
+
+/* Pressed: a quick squeeze so every click registers visually. */
+.btn:active:not(:disabled),
+.toggle button:active:not(:disabled),
+.chip-btn:active:not(:disabled),
+.card-btn:active:not(:disabled) { transform: scale(0.97); }
+
+/* Disabled (e.g. another action in the same group is running). */
+.btn:disabled,
+.toggle button:disabled,
+.chip-btn:disabled,
+.card-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Pending: the clicked button fades and spins until the request finishes. */
+.btn.is-pending,
+.btn.is-pending:disabled { opacity: 0.6; cursor: progress; }
+.btn.is-pending::before {
+  content: '';
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* "Selected" state for segmented buttons such as Run / Pause. */
+.btn.selected {
+  background: var(--ink); color: var(--bg); border-color: var(--ink);
+}
+/* A selected segment is disabled only because it's already active: keep it solid. */
+.btn.selected:disabled { opacity: 1; cursor: default; }
+.btn.selected.is-pending:disabled { opacity: 0.6; cursor: progress; }
+
+/* Small count badge inside buttons and chips. */
+.count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--ink-3);
+  line-height: 16px;
+}
+.chip.solid .count, .btn.selected .count { background: rgba(255,255,255,0.18); color: inherit; }
+
+/* Keyboard focus ring for every interactive control. */
+.btn:focus-visible, .tab:focus-visible, .toggle button:focus-visible,
+.chip-btn:focus-visible, .card-btn:focus-visible, .side-item:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Clickable chip (scenario pickers, filters). */
+.chip-btn {
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 90ms ease, opacity 180ms ease;
+}
+.chip-btn:hover:not(:disabled):not(.solid) { border-color: var(--line-2); background: var(--surface); color: var(--ink); }
+
+/* Card that acts as a button (incident lists). */
+.card-btn {
+  display: block; width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 90ms ease;
+}
+.card-btn:hover:not(:disabled) { border-color: var(--line-2); }
+.card-btn.selected { border-color: var(--ink); box-shadow: var(--shadow-2); }
+
+.form-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn, .toggle button, .chip-btn, .card-btn { transition: none; }
+  .btn:active:not(:disabled), .toggle button:active:not(:disabled),
+  .chip-btn:active:not(:disabled), .card-btn:active:not(:disabled) { transform: none; }
+  .btn.is-pending::before { animation-duration: 2s; }
+}
 
 /* ---------- Mono / labels ---------- */
 .mono { font-family: var(--mono); font-size: 12px; }
@@ -302,7 +392,9 @@ a { color: inherit; }
   font-weight: 500;
   border-radius: 999px;
   color: var(--ink-3);
+  transition: background 140ms ease, color 140ms ease, transform 90ms ease;
 }
+.toggle button:hover:not(.on):not(:disabled) { color: var(--ink); background: var(--bg-2); }
 .toggle button.on {
   background: var(--ink); color: var(--bg);
 }
@@ -332,7 +424,8 @@ a { color: inherit; }
   color: var(--ink-2);
   cursor: pointer;
 }
-.side-item:hover { background: var(--bg-2); }
+.side-item { transition: background 120ms ease, color 120ms ease; }
+.side-item:hover:not(.active) { background: var(--bg-2); }
 .side-item.active {
   background: var(--surface);
   color: var(--ink);

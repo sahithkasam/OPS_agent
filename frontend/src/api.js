@@ -5,7 +5,11 @@ async function req(path, opts = {}) {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
-  if (!r.ok) throw new Error(`${r.status} ${path}`);
+  if (!r.ok) {
+    let detail = '';
+    try { detail = (await r.json())?.detail || ''; } catch { /* not JSON */ }
+    throw new Error(detail ? `${detail} (${r.status})` : `Request failed: ${r.status} ${path}`);
+  }
   return r.json();
 }
 
@@ -13,7 +17,8 @@ export const api = {
   state: () => req('/state'),
   tick: () => req('/tick', { method: 'POST' }),
   setAuto: (on) => req(`/auto?on=${on}`, { method: 'POST' }),
-  inject: (incident_type, severity = 'P2') =>
+  // severity is an optional operator hint (P1/P2/P3); null lets triage decide.
+  inject: (incident_type, severity = null) =>
     req('/inject', { method: 'POST', body: JSON.stringify({ incident_type, severity }) }),
   approve: (id) => req(`/incidents/${id}/approve`, { method: 'POST' }),
   deny: (id) => req(`/incidents/${id}/deny`, { method: 'POST' }),

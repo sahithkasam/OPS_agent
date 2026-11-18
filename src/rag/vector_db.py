@@ -1,53 +1,139 @@
-import chromadb
+"""ChromaDB knowledge base of past incidents (real public postmortems).
+
+The collection name includes a hash of the dataset file, so editing or
+regenerating data/historical_incidents.json automatically re-indexes it
+instead of silently serving a stale index.
+"""
+import hashlib
 import json
-import uuid
+import os
+from pathlib import Path
+
+import chromadb
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_DATASET = ROOT / "data" / "historical_incidents.json"
+COLLECTION_PREFIX = "incidents_"
+# Chroma's built-in embedding function (all-MiniLM-L6-v2, 384 dims).
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_DIMS = 384
+
+
+def _scalar(value):
+    """Chroma metadata values must be str/int/float/bool (no None or lists)."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value)
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def document_text(item: dict) -> str:
+    """Text that gets embedded for one incident."""
+    return (
+        f"Title: {item.get('summary', '')}. "
+        f"Category: {str(item.get('category', '')).replace('_', ' ')}. "
+        f"Symptoms: {item.get('logs_signature', '')}. "
+        f"Cause: {item.get('root_cause', '')}. "
+        f"Fix: {item.get('resolution', '')}. "
+        f"Details: {item.get('description', '')}"
+    )
+
 
 class KnowledgeBase:
-    def __init__(self):
-        # Using a simple in-memory client for demo portability, or persistent local directory
-        import os
-        chroma_path = os.environ.get("CHROMA_PATH", "./data/chroma_db")
+    def __init__(self, dataset_path=None):
+        self.dataset_path = Path(dataset_path or DEFAULT_DATASET)
+        chroma_path = os.environ.get("CHROMA_PATH", str(ROOT / "data" / "chroma_db"))
         self.client = chromadb.PersistentClient(path=chroma_path)
-        self.collection = self.client.get_or_create_collection(name="incidents")
-        self.is_populated = False
+        self.collection_name = COLLECTION_PREFIX + self._dataset_hash()
+        self.collection = self.client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        self.is_populated = self.collection.count() > 0
 
-    def populate(self, json_path):
-        """
-        Loads incidents from JSON and stores them in Chroma.
-        """
+    def _dataset_hash(self) -> str:
+        try:
+            return hashlib.sha256(self.dataset_path.read_bytes()).hexdigest()[:12]
+        except FileNotFoundError:
+            return "empty"
+
+    def _drop_stale_collections(self):
+        for col in self.client.list_collections():
+            name = col if isinstance(col, str) else col.name
+            if name != self.collection_name and (name == "incidents" or name.startswith(COLLECTION_PREFIX)):
+                try:
+                    self.client.delete_collection(name)
+                except Exception as e:
+                    print(f"[KB] Could not drop stale collection {name}: {e}")
+
+    def populate(self):
+        """Index the dataset into Chroma (no-op if this exact dataset is already indexed)."""
         if self.collection.count() > 0:
-            print("Vector DB already populated.")
             self.is_populated = True
             return
 
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-
-        ids = []
-        documents = []
-        metadatas = []
-
-        for item in data:
-            ids.append(item['id'])
-            # Create a rich text representation for embedding
-            doc_text = f"Title: {item['summary']}. Symptoms: {item['logs_signature']}. Cause: {item['root_cause']}. Fix: {item['resolution']}."
-            documents.append(doc_text)
-            metadatas.append(item)
+        self._drop_stale_collections()
+        data = self.load_items()
+        if not data:
+            print(f"[KB] No incidents found in {self.dataset_path}")
+            return
 
         self.collection.add(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas
+            ids=[item["id"] for item in data],
+            documents=[document_text(item) for item in data],
+            metadatas=[{k: _scalar(v) for k, v in item.items()} for item in data],
         )
         self.is_populated = True
-        print(f"Populated Vector DB with {len(documents)} accumulated incidents.")
+        print(f"[KB] Indexed {len(data)} incidents into '{self.collection_name}'.")
 
-    def search(self, query_text, n_results=2):
-        """
-        Returns relevant past incidents based on query (current symptoms).
-        """
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=n_results
+    def load_items(self) -> list:
+        try:
+            with open(self.dataset_path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+
+    def add_incident(self, item: dict):
+        """Add one incident (e.g. a resolved live incident) to the index."""
+        self.collection.upsert(
+            ids=[item["id"]],
+            documents=[document_text(item)],
+            metadatas=[{k: _scalar(v) for k, v in item.items()}],
         )
-        return results
+
+    def live_items(self) -> list:
+        """Incidents added at runtime (not part of the dataset file)."""
+        got = self.collection.get(where={"source": "live"})
+        return list(got.get("metadatas") or [])
+
+    def category_count(self, category: str) -> int:
+        if not category:
+            return 0
+        got = self.collection.get(where={"category": category}, include=[])
+        return len(got.get("ids") or [])
+
+    def search(self, query_text, n_results=3, category=None):
+        """Return the most similar past incidents.
+
+        When `category` is given and the knowledge base has incidents of that
+        type, the search is restricted to them, so a DNS incident is compared
+        with past DNS outages. Otherwise it falls back to the whole index.
+        Distances are cosine distances (similarity = 1 - distance).
+        """
+        total = self.collection.count()
+        if total == 0:
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        where = None
+        pool = total
+        if category:
+            in_cat = self.category_count(category)
+            if in_cat:
+                where, pool = {"category": category}, in_cat
+        return self.collection.query(
+            query_texts=[query_text],
+            n_results=max(1, min(n_results, pool)),
+            where=where,
+        )

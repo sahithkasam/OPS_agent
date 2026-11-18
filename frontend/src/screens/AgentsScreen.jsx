@@ -1,21 +1,34 @@
 import React, { useState } from 'react';
 import { AGENTS, severityTone } from '../agents.js';
 import { api } from '../api.js';
+import { typeLabel } from '../incidentTypes.js';
+import { useBusy } from '../useBusy.js';
 import { PlaybookModal, extractPlaybookSteps } from '../components/PlaybookModal.jsx';
+
+// Make a div behave like a button for keyboard users too.
+const pressable = (onPress) => ({
+  role: 'button',
+  tabIndex: 0,
+  onClick: onPress,
+  onKeyDown: (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPress(); }
+  },
+});
 
 export function AgentsScreen({ state, refresh, selected, selectedId, onSelect }) {
   const [activeId, setActiveId] = useState('triage');
   const [playbook, setPlaybook] = useState(null);
+  const decide = useBusy();
   const incidents = state?.incidents ?? [];
   const incident = selected || incidents[0];
   const a = incident?.analysis;
 
-  const runAction = async (kind, inc) => {
+  const runAction = (kind, inc) => decide.run(kind, async () => {
     const beforeLogs = state?.logs || [];
     const after = kind === 'approve' ? await api.approve(inc.id) : await api.deny(inc.id);
     setPlaybook({ incident: inc, kind, steps: extractPlaybookSteps(beforeLogs, after?.logs, kind) });
-    refresh();
-  };
+    await refresh();
+  });
 
   return (
     <div className="split">
@@ -25,7 +38,8 @@ export function AgentsScreen({ state, refresh, selected, selectedId, onSelect })
           <div
             key={ag.id}
             className={`side-item ${activeId === ag.id ? 'active' : ''}`}
-            onClick={() => setActiveId(ag.id)}
+            aria-pressed={activeId === ag.id}
+            {...pressable(() => setActiveId(ag.id))}
           >
             <span>{ag.emoji}</span>{ag.name}
           </div>
@@ -45,7 +59,8 @@ export function AgentsScreen({ state, refresh, selected, selectedId, onSelect })
             <div
               key={inc.id}
               className={`side-item ${active ? 'active' : ''}`}
-              onClick={() => onSelect?.(inc.id)}
+              aria-pressed={active}
+              {...pressable(() => onSelect?.(inc.id))}
               style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 2 }}
               title={pState}
             >
@@ -54,8 +69,8 @@ export function AgentsScreen({ state, refresh, selected, selectedId, onSelect })
                 <span className="mono-xs">{inc.id}</span>
                 <span className={`chip ${severityTone(sev)}`} style={{ marginLeft: 'auto', padding: '0 6px', fontSize: 10 }}>{sev}</span>
               </div>
-              <div style={{ fontSize: 11.5, color: active ? 'var(--bg)' : 'var(--ink-3)', paddingLeft: 13, display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                <span>{inc.type.replaceAll('_', ' ')}</span>
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', paddingLeft: 13, display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                <span>{typeLabel(inc.type)}</span>
                 {pState !== 'done' && (
                   <span className="mono-xs" style={{ fontSize: 10, opacity: 0.8 }}>{pState}</span>
                 )}
@@ -72,7 +87,9 @@ export function AgentsScreen({ state, refresh, selected, selectedId, onSelect })
         {incident && activeId === 'triage' && <TriagePanel a={a} incident={incident} />}
         {incident && activeId === 'diagnostics' && <DiagnosticsPanel a={a} incident={incident} />}
         {incident && activeId === 'rca' && <RCAPanel a={a} incident={incident} />}
-        {incident && activeId === 'remediation' && <RemediationPanel a={a} incident={incident} runAction={runAction} />}
+        {incident && activeId === 'remediation' && (
+          <RemediationPanel a={a} incident={incident} runAction={runAction} busy={decide.busy} error={decide.error} />
+        )}
         {incident && activeId === 'comms' && <CommsPanel a={a} incident={incident} />}
       </div>
       {playbook && (
@@ -235,7 +252,10 @@ function RCAPanel({ a, incident }) {
         <div className="serif" style={{ fontSize: 32, fontWeight: 600, marginTop: 6 }}>
           {r.rag_match_count ?? 0}
         </div>
-        <div className="muted mono-xs">historical incidents searched</div>
+        <div className="muted mono-xs">
+          retrieved from {r.kb_size ?? '?'} real postmortems
+          {r.incident_type ? ` · filtered to ${typeLabel(r.incident_type)}` : ''}
+        </div>
       </div>
       <div className="card">
         <div className="card-title">Top root cause</div>
@@ -246,9 +266,12 @@ function RCAPanel({ a, incident }) {
               <div className="bar accent" style={{ flex: 1 }}>
                 <span style={{ width: `${Math.round((top.confidence || 0) * 100)}%` }}></span>
               </div>
-              <span className="mono-xs">{Math.round((top.confidence || 0) * 100)}%</span>
+              <span className="mono-xs" title="cosine similarity">{Math.round((top.confidence || 0) * 100)}%</span>
             </div>
-            <div className="mono-xs muted" style={{ marginTop: 4 }}>match · {top.historical_id || '—'}</div>
+            <div className="mono-xs muted" style={{ marginTop: 4 }}>
+              match · {top.historical_id || '—'}{top.company ? ` · ${top.company}` : ''}
+              {top.source_url && <> · <a href={top.source_url} target="_blank" rel="noreferrer">postmortem ↗</a></>}
+            </div>
           </>
         ) : <div className="muted">No match.</div>}
       </div>
@@ -282,6 +305,11 @@ function RCAPanel({ a, incident }) {
               </div>
             </div>
             {h.reasoning && <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 6 }}>{h.reasoning}</div>}
+            {h.source_url && (
+              <a className="mono-xs" href={h.source_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 4 }}>
+                {h.historical_id} · read original postmortem ↗
+              </a>
+            )}
           </div>
         ))}
       </div>
@@ -289,7 +317,7 @@ function RCAPanel({ a, incident }) {
   );
 }
 
-function RemediationPanel({ a, incident, runAction }) {
+function RemediationPanel({ a, incident, runAction, busy, error }) {
   const r = a?.remediation_plan;
   if (!r) return <Empty incident={incident} />;
   const safety = r.safety_status;
@@ -317,8 +345,19 @@ function RemediationPanel({ a, incident, runAction }) {
           <div className="card-title">Decision</div>
           {incident && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-              <button className="btn accent" onClick={() => runAction('approve', incident)}>Approve & execute</button>
-              <button className="btn danger" onClick={() => runAction('deny', incident)}>Deny & escalate</button>
+              <button
+                className={`btn accent ${busy === 'approve' ? 'is-pending' : ''}`}
+                disabled={!!busy}
+                style={{ justifyContent: 'center' }}
+                onClick={() => runAction('approve', incident)}
+              >{busy === 'approve' ? 'Executing…' : 'Approve & execute'}</button>
+              <button
+                className={`btn danger ${busy === 'deny' ? 'is-pending' : ''}`}
+                disabled={!!busy}
+                style={{ justifyContent: 'center' }}
+                onClick={() => runAction('deny', incident)}
+              >{busy === 'deny' ? 'Escalating…' : 'Deny & escalate'}</button>
+              {error && <div className="form-error">{error}</div>}
             </div>
           )}
         </div>

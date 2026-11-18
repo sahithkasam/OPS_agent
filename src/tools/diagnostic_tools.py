@@ -214,7 +214,7 @@ def run_full_diagnostic(incident_type: str) -> dict:
     if incident_type in ("disk_usage_high",):
         report["checks"]["disk"] = check_disk_usage("/")
 
-    if incident_type in ("service_down", "latency_spike"):
+    if incident_type in ("service_down", "network_latency", "dns_failure", "bad_deploy"):
         report["checks"]["network"] = ping_host("8.8.8.8")
         report["checks"]["localhost"] = check_http_endpoint("http://localhost:8080/health")
 

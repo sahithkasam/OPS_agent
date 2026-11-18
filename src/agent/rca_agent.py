@@ -16,7 +16,7 @@ class RCAAgent(BaseAgent):
         super().__init__(name, bus)
         self.llm = llm_client
         self.kb = KnowledgeBase()
-        self.kb.populate('./data/historical_incidents.json')
+        self.kb.populate()
 
     def handle_message(self, message: AgentMessage) -> AgentMessage:
         payload = message.payload
@@ -26,11 +26,19 @@ class RCAAgent(BaseAgent):
         metrics = payload.get('metrics_snapshot') or triage_report.get('metrics_snapshot', {})
         log_features = payload.get('log_features') or triage_report.get('log_features', {})
 
+        incident_type = payload.get('incident_type')
+
         query_context = diagnostic_report.get('query_context') or (
             ", ".join(symptoms) if symptoms else "system anomaly"
         )
+        # Lead the query with the incident type so retrieval is anchored on the
+        # failure mode rather than on noisy metric strings.
+        search_text = (
+            f"{incident_type.replace('_', ' ')} incident. {query_context}"
+            if incident_type else query_context
+        )
 
-        rag_results = self.kb.search(query_context, n_results=3)
+        rag_results = self.kb.search(search_text, n_results=3, category=incident_type)
         hypotheses = self._parse_rag_results(rag_results, query_context)
 
         if not hypotheses:
@@ -48,6 +56,7 @@ class RCAAgent(BaseAgent):
         action = top["action"]
         reasoning = top["reasoning"]
         summary = query_context
+        llm_reasoning = None
 
         if self.llm and self.llm.is_active:
             log_samples = log_features.get('log_samples', [])
@@ -56,7 +65,10 @@ class RCAAgent(BaseAgent):
                 user_prompt=(
                     f"Symptoms: {query_context}\n"
                     f"Recent Logs: {'; '.join(log_samples[:3]) if log_samples else 'None'}\n"
-                    f"KB Top Match: {top['root_cause']} → {top['action']}\n"
+                    f"Incident type: {incident_type or 'unknown'}\n"
+                    f"Most similar past incident ({top.get('company') or 'n/a'}): "
+                    f"{top.get('description') or top['root_cause']}\n"
+                    f"Its recommended action: {top['action']}\n"
                     f"CPU: {metrics.get('cpu_percent', 0):.1f}%, "
                     f"Memory: {metrics.get('memory_percent', 0):.1f}%, "
                     f"Latency: {metrics.get('latency_seconds', 0):.2f}s"
@@ -67,6 +79,7 @@ class RCAAgent(BaseAgent):
                 action = result.get("action", action)
                 reasoning = result.get("reasoning", reasoning)
                 summary = result.get("summary", summary)
+                llm_reasoning = reasoning
 
         self.log(f"RCA complete. Top cause: {root_cause[:60]}... confidence={top['confidence']:.2f}")
 
@@ -83,6 +96,10 @@ class RCAAgent(BaseAgent):
                 'reasoning': reasoning,
                 'summary': summary,
                 'confidence': top['confidence'],
+                'rag_match_count': len(hypotheses) if top.get('historical_id') else 0,
+                'kb_size': self.kb.collection.count(),
+                'incident_type': incident_type,
+                'llm_reasoning': llm_reasoning,
                 'llm_powered': bool(self.llm and self.llm.is_active),
             },
             parent_message_id=message.id
@@ -121,12 +138,22 @@ class RCAAgent(BaseAgent):
         for i, doc in enumerate(rag_results["documents"][0]):
             meta = rag_results["metadatas"][0][i]
             dist = rag_results["distances"][0][i]
-            confidence = round(1.0 / (1.0 + dist), 3)
+            # Cosine distance -> similarity in [0, 1].
+            confidence = round(max(0.0, min(1.0, 1.0 - dist)), 3)
+            company = meta.get("company", "")
             hypotheses.append({
                 "root_cause": meta.get("root_cause", "Unknown"),
-                "action": meta.get("recommended_action", "Escalate"),
+                "action": meta.get("recommended_action", "Escalate to L3"),
                 "confidence": confidence,
-                "reasoning": f"Matches past incident: {meta.get('summary', '')} (conf: {confidence:.2f})"
+                "historical_id": meta.get("id", rag_results["ids"][0][i]),
+                "company": company,
+                "category": meta.get("category", ""),
+                "source_url": meta.get("source_url", ""),
+                "description": meta.get("description", ""),
+                "reasoning": (
+                    f"Similar to {company + ': ' if company else ''}{meta.get('summary', '')} "
+                    f"(similarity {confidence:.2f})"
+                ),
             })
         return hypotheses
 

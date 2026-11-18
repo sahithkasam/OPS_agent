@@ -19,6 +19,12 @@ export function PlaybookModal({ incident, kind, steps, onClose }) {
     return () => clearInterval(id);
   }, [steps]);
 
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   if (!incident) return null;
 
   const isApprove = kind === 'approve';

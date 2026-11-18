@@ -98,5 +98,7 @@ class RemediationAgent(BaseAgent):
             "process_crash": "PB-PRC-001",
             "database_lock": "PB-DBL-001",
             "ssl_expiry": "PB-SSL-001",
+            "bad_deploy": "PB-DEP-001",
+            "dns_failure": "PB-DNS-001",
         }
         return playbook_map.get(incident_type, "PB-GEN-000")

@@ -1,6 +1,7 @@
 # Environment
 .env
 .env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -44,3 +45,14 @@ data/pending_actions.json
 
 # Local application drafts
 application_materials/
+
+# Knowledge-base build progress / logs
+data/*.progress.jsonl
+data/kb_build.log
+
+# PSM anomaly-detection dataset (large; used only by scripts/evaluate_psm.py)
+data/train.csv
+data/test.csv
+data/test_label.csv
+data/LICENSE
+archive/data/
