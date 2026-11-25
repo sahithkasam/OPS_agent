@@ -38,6 +38,21 @@ export default function App() {
     return stop;
   }, [refresh, refreshKb]);
 
+  // The free-tier backend sleeps when idle and can take 1-2 minutes to wake.
+  // Keep retrying until it answers instead of leaving an empty dashboard.
+  const [waitedSec, setWaitedSec] = useState(0);
+  const waking = !state || (!kb && !!kbError);
+  useEffect(() => {
+    if (!waking) return;
+    const started = Date.now();
+    const timer = setInterval(() => {
+      setWaitedSec(Math.round((Date.now() - started) / 1000));
+      if (!state) refresh();
+      if (!kb) refreshKb();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [waking, state, kb, refresh, refreshKb]);
+
   // Auto-select first incident if none picked, or if previous selection is gone.
   useEffect(() => {
     const ids = (state?.incidents || []).map(i => i.id);
@@ -55,6 +70,13 @@ export default function App() {
 
   return (
     <AppShell tab={tab} onTab={setTab} state={state}>
+      {waking && (
+        <div className="wake-banner" role="status">
+          <span className="wake-dot" aria-hidden="true" />
+          Waking up the backend server - the free hosting tier sleeps when idle and can take 1-2 minutes to start.
+          {waitedSec > 0 && <span className="wake-time"> Waiting {waitedSec}s, retrying automatically.</span>}
+        </div>
+      )}
       {tab === 'live' && (
         <LiveScreen state={state} refresh={refresh} kbCounts={kbCounts}
           selectedId={selectedId} onSelect={setSelectedId} />
