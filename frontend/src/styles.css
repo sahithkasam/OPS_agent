@@ -591,3 +591,5 @@ input:focus, select:focus, textarea:focus {
 }
 @keyframes wake-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .wake-dot { animation: none; } }
+.wake-banner.soft { background: var(--bg-2); color: var(--ink-3); }
+.wake-banner.error { background: #f6d9d5; color: #8a2a1f; }

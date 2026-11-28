@@ -38,20 +38,27 @@ export default function App() {
     return stop;
   }, [refresh, refreshKb]);
 
-  // The free-tier backend sleeps when idle and can take 1-2 minutes to wake.
-  // Keep retrying until it answers instead of leaving an empty dashboard.
+  // The free-tier backend sleeps when idle and can take a while to wake, and
+  // the knowledge base finishes loading a moment after the server is up.
+  // Retry until both answer instead of leaving an empty dashboard.
+  // The timer depends only on the phase, not on `state`: live state arrives
+  // every second and would otherwise restart the timer before it ever fired.
+  const serverDown = !state;
+  const kbLoading = !serverDown && !kb;
+  const kbFailed = kbLoading && !!kbError && !kbError.includes('(503)');
   const [waitedSec, setWaitedSec] = useState(0);
-  const waking = !state || (!kb && !!kbError);
+  const phase = serverDown ? 'server' : kbLoading ? 'kb' : null;
   useEffect(() => {
-    if (!waking) return;
+    if (!phase) return;
     const started = Date.now();
+    setWaitedSec(0);
     const timer = setInterval(() => {
       setWaitedSec(Math.round((Date.now() - started) / 1000));
-      if (!state) refresh();
-      if (!kb) refreshKb();
-    }, 5000);
+      if (phase === 'server') refresh();
+      refreshKb();
+    }, 4000);
     return () => clearInterval(timer);
-  }, [waking, state, kb, refresh, refreshKb]);
+  }, [phase, refresh, refreshKb]);
 
   // Auto-select first incident if none picked, or if previous selection is gone.
   useEffect(() => {
@@ -70,11 +77,23 @@ export default function App() {
 
   return (
     <AppShell tab={tab} onTab={setTab} state={state}>
-      {waking && (
+      {serverDown && (
         <div className="wake-banner" role="status">
           <span className="wake-dot" aria-hidden="true" />
-          Waking up the backend server - the free hosting tier sleeps when idle and can take 1-2 minutes to start.
+          Waking up the backend server - the free hosting tier sleeps when idle and can take a minute or two to start.
           {waitedSec > 0 && <span className="wake-time"> Waiting {waitedSec}s, retrying automatically.</span>}
+        </div>
+      )}
+      {kbLoading && !kbFailed && (
+        <div className="wake-banner soft" role="status">
+          <span className="wake-dot" aria-hidden="true" />
+          Server is up. Loading the knowledge base of past incidents - the dashboard already works,
+          incident analysis starts as soon as it's ready.
+        </div>
+      )}
+      {kbFailed && (
+        <div className="wake-banner error" role="alert">
+          Knowledge base unavailable: {kbError} - retrying automatically.
         </div>
       )}
       {tab === 'live' && (
