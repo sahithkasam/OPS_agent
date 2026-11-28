@@ -96,3 +96,16 @@ def test_parser_skips_security_incidents():
     rec = build_kb.rule_extract(entries[0])
     assert rec["category"] in TYPES
     assert rec["duration"] == "40 minutes"
+
+
+def test_dataset_hash_ignores_line_endings(tmp_path):
+    """Windows (CRLF) and Linux (LF) checkouts must give the same hash,
+    otherwise the shipped vectors are rejected on the server."""
+    lf, crlf = tmp_path / "lf.json", tmp_path / "crlf.json"
+    lf.write_bytes(b'[\n  {"id": "PM-001"}\n]\n')
+    crlf.write_bytes(b'[\r\n  {"id": "PM-001"}\r\n]\r\n')
+    kb = KnowledgeBase.__new__(KnowledgeBase)
+    kb.dataset_path = lf
+    h_lf = kb._dataset_hash()
+    kb.dataset_path = crlf
+    assert kb._dataset_hash() == h_lf

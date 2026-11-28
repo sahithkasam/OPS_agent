@@ -54,8 +54,14 @@ class KnowledgeBase:
         self.is_populated = self.collection.count() > 0
 
     def _dataset_hash(self) -> str:
+        """Content hash of the dataset, independent of line endings.
+
+        Git on Windows checks files out with CRLF while Linux hosts get LF;
+        hashing raw bytes made the shipped vectors look stale on Render.
+        """
         try:
-            return hashlib.sha256(self.dataset_path.read_bytes()).hexdigest()[:12]
+            data = self.dataset_path.read_bytes().replace(b"\r\n", b"\n")
+            return hashlib.sha256(data).hexdigest()[:12]
         except FileNotFoundError:
             return "empty"
 
