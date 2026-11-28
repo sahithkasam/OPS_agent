@@ -1,10 +1,13 @@
 import numpy as np
-from sklearn.ensemble import IsolationForest
+
 
 class AnomalyDetector:
     def __init__(self):
-        # Hybrid approach: Rule-based for obvious L1 issues + ML for subtle drifts
-        self.model = IsolationForest(contamination=0.1, random_state=42)
+        # Hybrid approach: Rule-based for obvious L1 issues + ML for subtle drifts.
+        # The Isolation Forest is created in train_initial(): importing
+        # scikit-learn is the slowest part of a cold start on a small host,
+        # and the runtime only needs it once the model is actually trained.
+        self.model = None
         self.training_data = []
         self.is_fitted = False
         
@@ -19,6 +22,8 @@ class AnomalyDetector:
         data_points: list of [cpu, memory, latency]
         """
         if len(normal_data_points) > 10:
+            from sklearn.ensemble import IsolationForest
+            self.model = IsolationForest(contamination=0.1, random_state=42)
             self.model.fit(normal_data_points)
             self.is_fitted = True
 

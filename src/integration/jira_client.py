@@ -1,27 +1,43 @@
 import random
-try:
-    from jira import JIRA
-except ImportError:
-    JIRA = None
+
 
 class JiraConnector:
+    """Jira REST adapter, or an in-memory mock.
+
+    The connection (and the import of the `jira` package) happens on first
+    use, not at startup, so a cold start doesn't wait on a network call to
+    Atlassian. If connecting fails, the connector falls back to mock mode.
+    """
+
     def __init__(self, url=None, username=None, token=None, project_key="OPS", mock=True):
         self.project_key = project_key
-        self.mock = mock
         self.tickets = {}  # In-memory store for mock
         self.client = None
-        
-        if not self.mock and url and username and token:
-            if JIRA:
-                try:
-                    self.client = JIRA(server=url, basic_auth=(username, token))
-                    print(f"Connected to Jira: {url}")
-                except Exception as e:
-                    print(f"Failed to connect to Jira: {e}")
-                    self.mock = True # Fallback
-            else:
+        self._url, self._username, self._token = url, username, token
+        self._connected = False
+        # Real mode only if asked for and fully configured.
+        self.mock = mock or not (url and username and token)
+
+    def _ensure_client(self):
+        """Connect once, on first use. Returns True when the real client is usable."""
+        if self.mock:
+            return False
+        if not self._connected:
+            self._connected = True
+            try:
+                from jira import JIRA
+            except ImportError:
                 print("Jira library not installed. Falling back to mock.")
                 self.mock = True
+                return False
+            try:
+                self.client = JIRA(server=self._url, basic_auth=(self._username, self._token))
+                print(f"Connected to Jira: {self._url}")
+            except Exception as e:
+                print(f"Failed to connect to Jira: {e}")
+                self.mock = True
+                return False
+        return self.client is not None
 
     def create_ticket(self, incident_data):
         """
@@ -31,7 +47,7 @@ class JiraConnector:
         description = incident_data.get('root_cause')
         priority = incident_data.get('severity', 'Medium') # Map P1/P2 to Jira Priority if needed
         
-        if not self.mock and self.client:
+        if self._ensure_client():
             try:
                 issue_dict = {
                     'project': {'key': self.project_key},
@@ -60,7 +76,7 @@ class JiraConnector:
         return ticket_id
 
     def update_status(self, ticket_id, status, comment=None):
-        if not self.mock and self.client:
+        if self._ensure_client():
             try:
                 # Add comment
                 if comment:
@@ -103,7 +119,7 @@ class JiraConnector:
         """
         Retrieves the status of a Jira ticket.
         """
-        if not self.mock and self.client:
+        if self._ensure_client():
             try:
                 issue = self.client.issue(ticket_id)
                 return issue.fields.status.name

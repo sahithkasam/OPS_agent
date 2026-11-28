@@ -347,8 +347,17 @@ class KBIngestBody(BaseModel):
 
 
 def _kb():
-    """The RCA agent's knowledge base (single shared Chroma client)."""
-    return runtime.engine.orchestrator.rca.kb
+    """The RCA agent's knowledge base (single shared Chroma client).
+
+    It is built in the background after startup; until then answer 503 so the
+    dashboard retries instead of holding a request open.
+    """
+    rca = runtime.engine.orchestrator.rca
+    if not rca.kb_ready:
+        if rca._kb_ready.is_set():
+            raise HTTPException(500, f"Knowledge base failed to load: {rca._kb_error}")
+        raise HTTPException(503, "Knowledge base is still loading, retry in a few seconds")
+    return rca.kb
 
 
 @app.post("/api/kb/ingest")
@@ -388,8 +397,9 @@ def kb_ingest(body: KBIngestBody):
         "duration": "",
         "extraction": "live",
     }
+    kb = _kb()  # 503 while still loading
     try:
-        _kb().add_incident(item)
+        kb.add_incident(item)
     except Exception as e:
         raise HTTPException(500, f"KB ingest failed: {e}")
     return {"ok": True, "indexed_id": item["id"]}
@@ -500,4 +510,5 @@ async def slack_actions(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    rca = runtime.engine.orchestrator.rca if runtime else None
+    return {"ok": True, "kb_ready": bool(rca and rca.kb_ready)}

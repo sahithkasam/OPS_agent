@@ -9,8 +9,6 @@ import json
 import os
 from pathlib import Path
 
-import chromadb
-
 ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DATASET = ROOT / "data" / "historical_incidents.json"
 COLLECTION_PREFIX = "incidents_"
@@ -44,6 +42,7 @@ def document_text(item: dict) -> str:
 
 class KnowledgeBase:
     def __init__(self, dataset_path=None):
+        import chromadb  # imported here so that importing this module stays cheap
         self.dataset_path = Path(dataset_path or DEFAULT_DATASET)
         chroma_path = os.environ.get("CHROMA_PATH", str(ROOT / "data" / "chroma_db"))
         self.client = chromadb.PersistentClient(path=chroma_path)

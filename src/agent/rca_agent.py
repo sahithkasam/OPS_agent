@@ -5,6 +5,7 @@ RCA Agent - Root Cause Analysis using RAG + LLM.
 from .base_agent import BaseAgent
 from .message_bus import AgentMessage, MessageBus, MessageType
 from .llm_client import LLMClient
+import threading
 from typing import Optional
 from src.rag.vector_db import KnowledgeBase
 
@@ -15,8 +16,36 @@ class RCAAgent(BaseAgent):
         bus = bus or MessageBus()
         super().__init__(name, bus)
         self.llm = llm_client
-        self.kb = KnowledgeBase()
-        self.kb.populate()
+        # Build the knowledge base in the background so the API can answer
+        # (health checks, dashboard) while ChromaDB loads and indexes. Anything
+        # that needs the KB waits for it through the `kb` property.
+        self._kb = None
+        self._kb_error = None
+        self._kb_ready = threading.Event()
+        threading.Thread(target=self._build_kb, daemon=True, name="kb-build").start()
+
+    def _build_kb(self):
+        try:
+            kb = KnowledgeBase()
+            kb.populate()
+            self._kb = kb
+        except Exception as e:  # surfaced to callers of .kb
+            self._kb_error = e
+            print(f"[RCA] Knowledge base failed to load: {e}")
+        finally:
+            self._kb_ready.set()
+
+    @property
+    def kb_ready(self) -> bool:
+        return self._kb_ready.is_set() and self._kb is not None
+
+    @property
+    def kb(self) -> KnowledgeBase:
+        """The knowledge base; blocks until the background build has finished."""
+        self._kb_ready.wait()
+        if self._kb is None:
+            raise RuntimeError(f"Knowledge base unavailable: {self._kb_error}")
+        return self._kb
 
     def handle_message(self, message: AgentMessage) -> AgentMessage:
         payload = message.payload
